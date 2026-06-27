@@ -1,0 +1,14 @@
+{
+  "departure_city": "Mumbai",
+  "nationality": "Indian",
+  "months": 6,
+  "direct_flights": false,
+  "nights": 7,
+  "vibe": "culture",
+  "destination": {
+    "name": "Tokyo",
+    "country": "Japan",
+    "why": "A layered city break with food, design, neighbourhood wandering, and easy day trips.",
+    "tags": ["city", "food", "culture"]
+  }
+}

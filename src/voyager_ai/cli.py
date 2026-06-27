@@ -1,0 +1,156 @@
+"""Command line entry points for VoyagerAI."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import subprocess
+import sys
+from pathlib import Path
+from typing import Optional
+
+from voyager_ai.config import MODEL_PRESETS, MODEL_RATIONALE, Settings, load_settings
+from voyager_ai.constants import VIBES
+from voyager_ai.models import Destination, TravelPreferences, ValidationError, VoyagerError
+from voyager_ai.planner import TravelPlanner
+
+
+def main(argv: Optional[list[str]] = None) -> int:
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    try:
+        return args.func(args)
+    except (ValidationError, VoyagerError) as exc:
+        print("VoyagerAI error: %s" % exc, file=sys.stderr)
+        return 1
+    except KeyboardInterrupt:
+        print("\nCancelled.", file=sys.stderr)
+        return 130
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="voyager-ai",
+        description="Multi-agent travel research using local/open-model LLM backends.",
+    )
+    sub = parser.add_subparsers(required=True)
+
+    discover = sub.add_parser("discover", help="Suggest destinations for a traveller profile.")
+    add_common_args(discover)
+    discover.add_argument("--avoid", default="", help="Comma-separated destinations to avoid.")
+    discover.set_defaults(func=cmd_discover)
+
+    plan = sub.add_parser("plan", help="Create a full trip plan.")
+    add_common_args(plan)
+    plan.add_argument("--destination", required=True, help="Destination city or region.")
+    plan.add_argument("--country", required=True, help="Destination country.")
+    plan.add_argument("--why", default="Selected by the user.", help="Short reason for the destination.")
+    plan.add_argument("--tag", action="append", default=[], help="Destination tag. Can be repeated.")
+    plan.add_argument("--out", default="", help="Write markdown to this path.")
+    plan.set_defaults(func=cmd_plan)
+
+    models = sub.add_parser("models", help="Print the configured model presets.")
+    models.set_defaults(func=cmd_models)
+
+    web = sub.add_parser("web", help="Launch the Streamlit web app.")
+    web.set_defaults(func=cmd_web)
+    return parser
+
+
+def add_common_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--from", dest="departure_city", required=True, help="Departure city.")
+    parser.add_argument("--nationality", default="", help="Traveller nationality.")
+    parser.add_argument("--months", type=int, default=6, choices=[3, 6, 12], help="Travel window.")
+    parser.add_argument("--nights", type=int, default=7, help="Trip length in nights.")
+    parser.add_argument("--vibe", choices=sorted(VIBES), default="city", help="Travel style.")
+    parser.add_argument("--direct", action="store_true", help="Prefer direct flights only.")
+    parser.add_argument(
+        "--provider",
+        choices=["ollama", "openai-compatible", "demo"],
+        default="",
+        help="Override VOYAGER_LLM_PROVIDER for this run.",
+    )
+    parser.add_argument(
+        "--no-search",
+        action="store_true",
+        help="Disable live web search snippets for this run.",
+    )
+
+
+def preferences_from_args(args: argparse.Namespace) -> TravelPreferences:
+    return TravelPreferences(
+        departure_city=args.departure_city,
+        nationality=args.nationality,
+        months=args.months,
+        direct_flights=args.direct,
+        nights=args.nights,
+        vibe=args.vibe,
+    )
+
+
+def settings_from_args(args: argparse.Namespace) -> Settings:
+    settings = load_settings()
+    if getattr(args, "provider", ""):
+        settings.provider = args.provider
+    if getattr(args, "no_search", False):
+        settings.search_enabled = False
+    return settings
+
+
+def cmd_discover(args: argparse.Namespace) -> int:
+    settings = settings_from_args(args)
+    planner = TravelPlanner(settings=settings)
+    avoid = [item.strip() for item in args.avoid.split(",") if item.strip()]
+    destinations = planner.discover_destinations(preferences_from_args(args), avoid=avoid)
+    print(json.dumps([destination.to_dict() for destination in destinations], indent=2, ensure_ascii=False))
+    return 0
+
+
+def cmd_plan(args: argparse.Namespace) -> int:
+    settings = settings_from_args(args)
+    planner = TravelPlanner(settings=settings)
+    preferences = preferences_from_args(args)
+    destination = Destination(
+        name=args.destination,
+        country=args.country,
+        why=args.why,
+        tags=args.tag,
+    )
+
+    def progress(agent_id: str, status: str, result: object) -> None:
+        if status == "running":
+            print("[%s] running..." % agent_id, file=sys.stderr)
+        else:
+            print("[%s] %s" % (agent_id, status), file=sys.stderr)
+
+    trip = planner.plan_trip(preferences, destination, progress=progress)
+    markdown = trip.to_markdown()
+    if args.out:
+        path = Path(args.out)
+        path.write_text(markdown, encoding="utf-8")
+        print("Wrote %s" % path)
+    else:
+        print(markdown)
+    return 0 if not trip.errors else 2
+
+
+def cmd_models(args: argparse.Namespace) -> int:
+    print("Model presets:")
+    for preset, mapping in MODEL_PRESETS.items():
+        print("\n[%s]" % preset)
+        for agent_id, model in mapping.items():
+            print("  %-10s %s" % (agent_id, model))
+    print("\nRationale:")
+    for family, rationale in MODEL_RATIONALE.items():
+        print("  %-18s %s" % (family, rationale))
+    return 0
+
+
+def cmd_web(args: argparse.Namespace) -> int:
+    app_path = Path(__file__).with_name("app.py")
+    command = [sys.executable, "-m", "streamlit", "run", str(app_path)]
+    try:
+        return subprocess.call(command)
+    except FileNotFoundError:
+        print("Streamlit is not installed. Run: pip install -e .", file=sys.stderr)
+        return 1
