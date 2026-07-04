@@ -33,7 +33,7 @@ def date_range(months: int, today: date | None = None) -> str:
 
     start = today or date.today()
     end = add_months(start, months)
-    return "%s - %s" % (format_date(start), format_date(end))
+    return f"{format_date(start)} - {format_date(end)}"
 
 
 def truncate(text: str, limit: int = 1200) -> str:

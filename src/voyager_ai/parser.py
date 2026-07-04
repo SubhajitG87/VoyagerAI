@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass
-from typing import Any, List
+from typing import Any
 
 from voyager_ai.models import ValidationError
 
@@ -25,8 +25,8 @@ class ItinerarySection:
 
 @dataclass
 class ParsedItinerary:
-    days: List[ItineraryDay]
-    extras: List[ItinerarySection]
+    days: list[ItineraryDay]
+    extras: list[ItinerarySection]
 
 
 DAY_RE = re.compile(r"^##\s+Day\s+(\d+)\s*[:\-\u2013\u2014]?\s*(.*)$", re.IGNORECASE)
@@ -83,7 +83,7 @@ def extract_json(text: str) -> Any:
     try:
         return json.loads(candidate)
     except json.JSONDecodeError as exc:
-        raise ValidationError("The model did not return valid JSON: %s" % exc) from exc
+        raise ValidationError(f"The model did not return valid JSON: {exc}") from exc
 
 
 def parse_itinerary(text: str) -> ParsedItinerary:
@@ -102,7 +102,7 @@ def parse_itinerary(text: str) -> ParsedItinerary:
             days.append(
                 ItineraryDay(
                     num=int(day_match.group(1)),
-                    title=day_match.group(2).strip() or "Day %s" % day_match.group(1),
+                    title=day_match.group(2).strip() or f"Day {day_match.group(1)}",
                     body=body,
                 )
             )

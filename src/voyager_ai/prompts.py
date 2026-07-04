@@ -3,11 +3,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict
 
 from voyager_ai.models import Destination, TravelPreferences
 from voyager_ai.utils import truncate
-
 
 DESTINATION_JSON_SCHEMA = {
     "type": "object",
@@ -54,27 +52,18 @@ def discovery_prompt(preferences: TravelPreferences, avoid: str = "") -> AgentPr
         '{"destinations":[{"name":"string","country":"string","flag":"string",'
         '"why":"one vivid specific sentence","tags":["short","tags"]}]}.'
     )
-    avoid_line = "Avoid repeating these destinations: %s." % avoid if avoid else ""
+    avoid_line = f"Avoid repeating these destinations: {avoid}." if avoid else ""
     user = (
-        "Departure: {departure}\n"
-        "Nationality: {nationality}\n"
-        "Travel window: {months} months ({window})\n"
-        "Trip length: {nights} nights / {days} days\n"
-        "Travel style: {vibe}\n"
-        "Flight preference: {flight_pref}\n"
-        "{avoid_line}\n"
-        "Suggest exactly 8 worldwide destinations. Each suggestion should be plausible from the "
-        "departure city, seasonally sensible within the travel window, and distinct from the others."
-    ).format(
-        departure=preferences.departure_city,
-        nationality=preferences.nationality_or_default,
-        months=preferences.months,
-        window=preferences.travel_window,
-        nights=preferences.nights,
-        days=preferences.days,
-        vibe=preferences.vibe_description,
-        flight_pref=preferences.flight_preference,
-        avoid_line=avoid_line,
+        f"Departure: {preferences.departure_city}\n"
+        f"Nationality: {preferences.nationality_or_default}\n"
+        f"Travel window: {preferences.months} months ({preferences.travel_window})\n"
+        f"Trip length: {preferences.nights} nights / {preferences.days} days\n"
+        f"Travel style: {preferences.vibe_description}\n"
+        f"Flight preference: {preferences.flight_preference}\n"
+        f"{avoid_line}\n"
+        "Suggest exactly 8 worldwide destinations. Each suggestion should be plausible from "
+        "the departure city, seasonally sensible within the travel window, and distinct from "
+        "the others."
     )
     return AgentPrompt(system=system, user=user, temperature=0.35, max_tokens=1800)
 
@@ -84,7 +73,7 @@ def agent_prompt(
     preferences: TravelPreferences,
     destination: Destination,
     search_context: str,
-    prior_results: Dict[str, str],
+    prior_results: dict[str, str],
 ) -> AgentPrompt:
     builders = {
         "flight": _flight_prompt,
@@ -100,7 +89,7 @@ def _flight_prompt(
     preferences: TravelPreferences,
     destination: Destination,
     search_context: str,
-    prior_results: Dict[str, str],
+    prior_results: dict[str, str],
 ) -> AgentPrompt:
     system = (
         "You are Flight Scout, a flight research specialist. Produce realistic route options, "
@@ -108,21 +97,15 @@ def _flight_prompt(
         "Do not invent exact live fares; provide ranges and source-backed caveats."
     )
     user = (
-        "Find the best {flight_pref} from {origin} to {destination}. Window: {window}. "
-        "Trip: {nights} nights. Nationality: {nationality}. Travel style: {vibe}.\n\n"
-        "{search_context}\n\n"
+        f"Find the best {preferences.flight_preference} from {preferences.departure_city} to "
+        f"{destination.display_name}. Window: {preferences.travel_window}. "
+        f"Trip: {preferences.nights} nights. Nationality: "
+        f"{preferences.nationality_or_default}. Travel style: {preferences.vibe_description}.\n\n"
+        f"{search_context}\n\n"
         "Include: likely gateways, top airlines, economy and business fare ranges in USD, "
-        "duration ranges, cheapest booking window, seasonal price variation, baggage or schedule "
-        "watch-outs, and practical Google Flights / Skyscanner search links or query tips."
-    ).format(
-        flight_pref=preferences.flight_preference,
-        origin=preferences.departure_city,
-        destination=destination.display_name,
-        window=preferences.travel_window,
-        nights=preferences.nights,
-        nationality=preferences.nationality_or_default,
-        vibe=preferences.vibe_description,
-        search_context=search_context,
+        "duration ranges, cheapest booking window, seasonal price variation, baggage or "
+        "schedule watch-outs, and practical Google Flights / Skyscanner search links or "
+        "query tips."
     )
     return AgentPrompt(system=system, user=user, temperature=0.2, max_tokens=2400)
 
@@ -131,7 +114,7 @@ def _visa_prompt(
     preferences: TravelPreferences,
     destination: Destination,
     search_context: str,
-    prior_results: Dict[str, str],
+    prior_results: dict[str, str],
 ) -> AgentPrompt:
     system = (
         "You are Visa Advisor, a careful visa and immigration specialist. Prioritise official "
@@ -139,16 +122,12 @@ def _visa_prompt(
         "Use ## headings and end with a short 'Verify Before Booking' checklist."
     )
     user = (
-        "Visa and entry requirements for a tourist whose nationality is {nationality}, "
-        "visiting {destination}.\n\n"
-        "{search_context}\n\n"
-        "Cover: visa-free / e-visa / visa-on-arrival status, max stay, passport validity, proof of "
-        "funds or onward travel, health or insurance requirements, fees, processing time, recent "
-        "rule changes if found, official government links, and uncertainty notes."
-    ).format(
-        nationality=preferences.nationality_or_default,
-        destination=destination.display_name,
-        search_context=search_context,
+        f"Visa and entry requirements for a tourist whose nationality is "
+        f"{preferences.nationality_or_default}, visiting {destination.display_name}.\n\n"
+        f"{search_context}\n\n"
+        "Cover: visa-free / e-visa / visa-on-arrival status, max stay, passport validity, "
+        "proof of funds or onward travel, health or insurance requirements, fees, processing "
+        "time, recent rule changes if found, official government links, and uncertainty notes."
     )
     return AgentPrompt(system=system, user=user, temperature=0.1, max_tokens=2600)
 
@@ -157,23 +136,20 @@ def _hotel_prompt(
     preferences: TravelPreferences,
     destination: Destination,
     search_context: str,
-    prior_results: Dict[str, str],
+    prior_results: dict[str, str],
 ) -> AgentPrompt:
     system = (
         "You are Hotel Finder, a practical accommodation researcher. Compare neighbourhoods and "
         "shortlist hotels by budget tier. Use ## headings and call out uncertainty in rates."
     )
     user = (
-        "Best hotels and neighbourhoods in {destination} for a {nights}-night trip focused on "
-        "{vibe}.\n\n{search_context}\n\n"
-        "Give three tiers: Budget, Mid-range, Luxury. For each tier: 2-3 hotel names or hotel-like "
-        "areas if exact live availability is unavailable, neighbourhood, transit/access notes, "
-        "standout feature, estimated nightly range in USD, and one booking tip."
-    ).format(
-        destination=destination.display_name,
-        nights=preferences.nights,
-        vibe=preferences.vibe_description,
-        search_context=search_context,
+        f"Best hotels and neighbourhoods in {destination.display_name} for a "
+        f"{preferences.nights}-night trip focused on {preferences.vibe_description}.\n\n"
+        f"{search_context}\n\n"
+        "Give three tiers: Budget, Mid-range, Luxury. For each tier: 2-3 hotel names or "
+        "hotel-like areas if exact live availability is unavailable, neighbourhood, "
+        "transit/access notes, standout feature, estimated nightly range in USD, and one "
+        "booking tip."
     )
     return AgentPrompt(system=system, user=user, temperature=0.25, max_tokens=2600)
 
@@ -182,22 +158,20 @@ def _experience_prompt(
     preferences: TravelPreferences,
     destination: Destination,
     search_context: str,
-    prior_results: Dict[str, str],
+    prior_results: dict[str, str],
 ) -> AgentPrompt:
     system = (
-        "You are Experience Curator, a tours and activities specialist. Focus on %s. "
-        "Use ## headings and prefer experiences that fit the trip length without overpacking."
-    ) % preferences.vibe_description
+        f"You are Experience Curator, a tours and activities specialist. Focus on "
+        f"{preferences.vibe_description}. Use ## headings and prefer experiences that fit the "
+        f"trip length without overpacking."
+    )
     user = (
-        "Top 7-8 tours and experiences in or around {destination} for a {nights}-night trip.\n\n"
-        "{search_context}\n\n"
-        "For each: name, type, duration, estimated price per person, best time of day, booking lead "
-        "time, what makes it unmissable, and who should skip it. Include a balanced mix of anchors, "
-        "local texture, and one flexible bad-weather option."
-    ).format(
-        destination=destination.display_name,
-        nights=preferences.nights,
-        search_context=search_context,
+        f"Top 7-8 tours and experiences in or around {destination.display_name} for a "
+        f"{preferences.nights}-night trip.\n\n"
+        f"{search_context}\n\n"
+        "For each: name, type, duration, estimated price per person, best time of day, "
+        "booking lead time, what makes it unmissable, and who should skip it. Include a "
+        "balanced mix of anchors, local texture, and one flexible bad-weather option."
     )
     return AgentPrompt(system=system, user=user, temperature=0.35, max_tokens=2800)
 
@@ -206,7 +180,7 @@ def _itinerary_prompt(
     preferences: TravelPreferences,
     destination: Destination,
     search_context: str,
-    prior_results: Dict[str, str],
+    prior_results: dict[str, str],
 ) -> AgentPrompt:
     system = (
         "You are Itinerary Architect, a master travel planner. Write a vivid, practical, "
@@ -235,9 +209,9 @@ def _itinerary_prompt(
         "... all {days} days\n"
         "## Practical Tips\n"
         "## Budget Breakdown\n\n"
-        "For Budget Breakdown include return economy flights, mid-range hotels for {nights} nights, "
-        "food per day, activities total, local transport, and grand total range in USD. Keep the "
-        "schedule realistic and include rest/buffer time."
+        "For Budget Breakdown include return economy flights, mid-range hotels for "
+        "{nights} nights, food per day, activities total, local transport, and grand total "
+        "range in USD. Keep the schedule realistic and include rest/buffer time."
     ).format(
         nights=preferences.nights,
         days=preferences.days,

@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass, field
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any
 
 from voyager_ai.constants import AGENTS, VIBE_DESCRIPTIONS
 from voyager_ai.utils import clean_text, date_range
@@ -43,7 +44,7 @@ class TravelPreferences:
         if not 3 <= self.nights <= 30:
             errors.append("Trip length must be between 3 and 30 nights.")
         if self.vibe not in VIBE_DESCRIPTIONS:
-            errors.append("Travel style must be one of: %s." % ", ".join(VIBE_DESCRIPTIONS))
+            errors.append(f"Travel style must be one of: {', '.join(VIBE_DESCRIPTIONS)}.")
         if errors:
             raise ValidationError(" ".join(errors))
 
@@ -75,11 +76,11 @@ class Destination:
     name: str
     country: str
     why: str
-    tags: List[str] = field(default_factory=list)
+    tags: list[str] = field(default_factory=list)
     flag: str = ""
 
     @classmethod
-    def from_mapping(cls, payload: Dict[str, Any]) -> "Destination":
+    def from_mapping(cls, payload: dict[str, Any]) -> Destination:
         name = clean_text(payload.get("name"))
         country = clean_text(payload.get("country"))
         why = clean_text(payload.get("why"))
@@ -95,9 +96,9 @@ class Destination:
 
     @property
     def display_name(self) -> str:
-        return "%s, %s" % (self.name, self.country)
+        return f"{self.name}, {self.country}"
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "name": self.name,
             "country": self.country,
@@ -116,8 +117,8 @@ class SearchResult:
     snippet: str = ""
 
     def to_markdown(self) -> str:
-        snippet = (" - " + self.snippet) if self.snippet else ""
-        return "- %s: %s%s" % (self.title, self.url, snippet)
+        snippet = f" - {self.snippet}" if self.snippet else ""
+        return f"- {self.title}: {self.url}{snippet}"
 
 
 @dataclass
@@ -128,8 +129,8 @@ class AgentResult:
     content: str
     model: str
     status: str = "done"
-    error: Optional[str] = None
-    sources: List[SearchResult] = field(default_factory=list)
+    error: str | None = None
+    sources: list[SearchResult] = field(default_factory=list)
 
     @property
     def label(self) -> str:
@@ -142,7 +143,7 @@ class TripPlan:
 
     preferences: TravelPreferences
     destination: Destination
-    results: Dict[str, AgentResult]
+    results: dict[str, AgentResult]
 
     @property
     def itinerary(self) -> str:
@@ -150,7 +151,7 @@ class TripPlan:
         return result.content if result else ""
 
     @property
-    def errors(self) -> Dict[str, str]:
+    def errors(self) -> dict[str, str]:
         return {
             agent_id: result.error
             for agent_id, result in self.results.items()
@@ -159,14 +160,14 @@ class TripPlan:
 
     def to_markdown(self) -> str:
         lines = [
-            "# VoyagerAI Trip Plan: %s" % self.destination.display_name,
+            f"# VoyagerAI Trip Plan: {self.destination.display_name}",
             "",
-            "- Departure: %s" % self.preferences.departure_city,
-            "- Nationality: %s" % self.preferences.nationality_or_default,
-            "- Travel window: %s" % self.preferences.travel_window,
-            "- Trip length: %s nights / %s days" % (self.preferences.nights, self.preferences.days),
-            "- Flight preference: %s" % self.preferences.flight_preference,
-            "- Travel style: %s" % self.preferences.vibe_description,
+            f"- Departure: {self.preferences.departure_city}",
+            f"- Nationality: {self.preferences.nationality_or_default}",
+            f"- Travel window: {self.preferences.travel_window}",
+            f"- Trip length: {self.preferences.nights} nights / {self.preferences.days} days",
+            f"- Flight preference: {self.preferences.flight_preference}",
+            f"- Travel style: {self.preferences.vibe_description}",
             "",
         ]
 
@@ -174,18 +175,18 @@ class TripPlan:
             result = self.results.get(agent_id)
             if not result:
                 continue
-            lines.extend(["## %s" % result.label, "", result.content.strip(), ""])
+            lines.extend([f"## {result.label}", "", result.content.strip(), ""])
             if result.sources:
                 lines.extend(["### Sources Considered", ""])
                 lines.extend(source.to_markdown() for source in result.sources)
                 lines.append("")
             if result.error:
-                lines.extend(["> Agent warning: %s" % result.error, ""])
+                lines.extend([f"> Agent warning: {result.error}", ""])
 
         return "\n".join(lines).strip() + "\n"
 
 
-def dedupe_destinations(destinations: Iterable[Destination]) -> List[Destination]:
+def dedupe_destinations(destinations: Iterable[Destination]) -> list[Destination]:
     """Remove duplicate destination names while preserving order."""
 
     seen = set()

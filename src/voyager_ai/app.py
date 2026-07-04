@@ -9,7 +9,13 @@ import streamlit as st
 
 from voyager_ai.config import MODEL_PRESETS, load_settings
 from voyager_ai.constants import AGENT_SEQUENCE, AGENTS, CITIES, NATIONALITIES, VIBES
-from voyager_ai.models import AgentResult, Destination, TravelPreferences, ValidationError, VoyagerError
+from voyager_ai.models import (
+    AgentResult,
+    Destination,
+    TravelPreferences,
+    ValidationError,
+    VoyagerError,
+)
 from voyager_ai.parser import parse_itinerary
 from voyager_ai.planner import TravelPlanner
 
@@ -24,8 +30,10 @@ def main() -> None:
         <div class="hero">
           <div class="eyebrow">Multi-agent travel research</div>
           <h1>VoyagerAI</h1>
-          <p>Discover destinations, research flights, check visas, compare stays, curate experiences,
-          and turn it all into a practical itinerary using local/open-model LLMs.</p>
+          <p>
+            Discover destinations, research flights, check visas, compare stays, curate
+            experiences, and turn it all into a practical itinerary using local/open-model LLMs.
+          </p>
         </div>
         """,
         unsafe_allow_html=True,
@@ -39,7 +47,7 @@ def main() -> None:
 
 
 def init_state() -> None:
-    defaults = {
+    defaults: dict[str, object] = {
         "destinations": [],
         "avoid_destinations": [],
         "trip": None,
@@ -71,14 +79,22 @@ def sidebar_settings():
         settings.provider = provider
         settings.model_preset = preset
         settings.model_map = dict(MODEL_PRESETS[preset])
-        settings.search_enabled = st.toggle("Use web search snippets", value=settings.search_enabled)
-        settings.search_max_results = st.slider("Snippets per query", 1, 6, settings.search_max_results)
+        settings.search_enabled = st.toggle(
+            "Use web search snippets",
+            value=settings.search_enabled,
+        )
+        settings.search_max_results = st.slider(
+            "Snippets per query",
+            1,
+            6,
+            settings.search_max_results,
+        )
 
-        st.caption("Default backend: Ollama at `%s`." % settings.ollama_base_url)
+        st.caption(f"Default backend: Ollama at `{settings.ollama_base_url}`.")
         st.caption("Use `demo` for a no-network smoke test.")
         with st.expander("Agent models"):
             for agent_id, model in settings.model_map.items():
-                st.code("%s: %s" % (agent_id, model), language="text")
+                st.code(f"{agent_id}: {model}", language="text")
     return settings
 
 
@@ -92,16 +108,19 @@ def preferences_panel(planner: TravelPlanner) -> None:
                     "Flying from",
                     value="",
                     placeholder="e.g. Mumbai, London, New York",
-                    help="You can type any city. Suggestions from the original app are listed below.",
+                    help=(
+                        "You can type any city. Suggestions from the original app are listed "
+                        "below."
+                    ),
                 )
-                st.caption("Examples: %s" % ", ".join(CITIES[:8]))
+                st.caption(f"Examples: {', '.join(CITIES[:8])}")
             with col2:
                 nationality = st.text_input(
                     "Nationality",
                     value="",
                     placeholder="e.g. Indian, British, American",
                 )
-                st.caption("Examples: %s" % ", ".join(NATIONALITIES[:8]))
+                st.caption(f"Examples: {', '.join(NATIONALITIES[:8])}")
 
             col3, col4, col5 = st.columns(3)
             with col3:
@@ -131,7 +150,7 @@ def preferences_panel(planner: TravelPlanner) -> None:
                     st.session_state.destinations = planner.discover_destinations(
                         prefs, avoid=st.session_state.avoid_destinations
                     )
-                st.success("Found %s destinations." % len(st.session_state.destinations))
+                st.success(f"Found {len(st.session_state.destinations)} destinations.")
             except (ValidationError, VoyagerError) as exc:
                 st.error(str(exc))
 
@@ -147,7 +166,7 @@ def destination_panel(planner: TravelPlanner) -> None:
     for index, destination in enumerate(destinations):
         with cols[index % 4]:
             render_destination(destination)
-            if st.button("Plan %s" % destination.name, key="plan_%s_%s" % (destination.name, index)):
+            if st.button(f"Plan {destination.name}", key=f"plan_{destination.name}_{index}"):
                 run_trip(planner, preferences, destination)
 
     col1, col2 = st.columns([1, 3])
@@ -164,27 +183,25 @@ def destination_panel(planner: TravelPlanner) -> None:
 
 
 def render_destination(destination: Destination) -> None:
-    tags = " ".join('<span class="pill">%s</span>' % escape(tag) for tag in destination.tags)
+    tags = " ".join(f'<span class="pill">{escape(tag)}</span>' for tag in destination.tags)
     st.markdown(
-        """
+        f"""
         <div class="dest-card">
-          <div class="dest-title">{flag} {name}</div>
-          <div class="dest-country">{country}</div>
-          <p>{why}</p>
+          <div class="dest-title">{destination.flag} {escape(destination.name)}</div>
+          <div class="dest-country">{escape(destination.country)}</div>
+          <p>{escape(destination.why)}</p>
           <div>{tags}</div>
         </div>
-        """.format(
-            flag=destination.flag,
-            name=escape(destination.name),
-            country=escape(destination.country),
-            why=escape(destination.why),
-            tags=tags,
-        ),
+        """,
         unsafe_allow_html=True,
     )
 
 
-def run_trip(planner: TravelPlanner, preferences: TravelPreferences, destination: Destination) -> None:
+def run_trip(
+    planner: TravelPlanner,
+    preferences: TravelPreferences,
+    destination: Destination,
+) -> None:
     st.session_state.planning_log = {}
     progress_bar = st.progress(0)
     status_box = st.empty()
@@ -199,10 +216,10 @@ def run_trip(planner: TravelPlanner, preferences: TravelPreferences, destination
         for current in AGENT_SEQUENCE:
             current_status = st.session_state.planning_log.get(current, "queued")
             label = AGENTS[current]["label"]
-            lines.append("- **%s**: %s" % (label, current_status))
+            lines.append(f"- **{label}**: {current_status}")
         status_box.markdown("\n".join(lines))
 
-    with st.spinner("Running specialist agents for %s..." % destination.display_name):
+    with st.spinner(f"Running specialist agents for {destination.display_name}..."):
         st.session_state.trip = planner.plan_trip(preferences, destination, progress=progress)
     if st.session_state.trip.errors:
         st.warning("The plan finished with agent warnings. See the research tabs for details.")
@@ -217,20 +234,15 @@ def trip_panel() -> None:
 
     st.subheader("3. Complete Travel Plan")
     st.markdown(
-        "**%s** from **%s** | %s nights | %s"
-        % (
-            trip.destination.display_name,
-            trip.preferences.departure_city,
-            trip.preferences.nights,
-            trip.preferences.travel_window,
-        )
+        f"**{trip.destination.display_name}** from **{trip.preferences.departure_city}** | "
+        f"{trip.preferences.nights} nights | {trip.preferences.travel_window}"
     )
 
     markdown = trip.to_markdown()
     st.download_button(
         "Download Markdown",
         data=markdown,
-        file_name="voyager_ai_%s.md" % trip.destination.name.lower().replace(" ", "_"),
+        file_name=f"voyager_ai_{trip.destination.name.lower().replace(' ', '_')}.md",
         mime="text/markdown",
     )
 
@@ -239,7 +251,7 @@ def trip_panel() -> None:
         parsed = parse_itinerary(trip.itinerary)
         if parsed.days:
             for day in parsed.days:
-                with st.expander("Day %s - %s" % (day.num, day.title), expanded=day.num == 1):
+                with st.expander(f"Day {day.num} - {day.title}", expanded=day.num == 1):
                     st.markdown(day.body)
             for section in parsed.extras:
                 with st.expander(section.title):
@@ -248,15 +260,18 @@ def trip_panel() -> None:
             st.markdown(trip.itinerary)
 
     with research_tab:
-        for agent_id, result in trip.results.items():
-            with st.expander("%s (%s)" % (result.label, result.status), expanded=result.error is not None):
+        for _agent_id, result in trip.results.items():
+            with st.expander(
+                f"{result.label} ({result.status})",
+                expanded=result.error is not None,
+            ):
                 if result.error:
                     st.error(result.error)
                 st.markdown(result.content)
                 if result.sources:
                     st.write("Sources considered")
                     for source in result.sources:
-                        st.markdown("- [%s](%s) - %s" % (source.title, source.url, source.snippet))
+                        st.markdown(f"- [{source.title}]({source.url}) - {source.snippet}")
 
     with raw_tab:
         st.code(markdown, language="markdown")

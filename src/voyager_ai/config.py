@@ -4,8 +4,6 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass, field
-from typing import Dict
-
 
 MODEL_PRESETS = {
     "small": {
@@ -79,7 +77,7 @@ class Settings:
 
     provider: str = "ollama"
     model_preset: str = "balanced"
-    model_map: Dict[str, str] = field(default_factory=lambda: dict(MODEL_PRESETS["balanced"]))
+    model_map: dict[str, str] = field(default_factory=lambda: dict(MODEL_PRESETS["balanced"]))
     ollama_base_url: str = "http://localhost:11434"
     openai_base_url: str = "http://localhost:1234/v1"
     openai_api_key: str = ""
@@ -89,7 +87,7 @@ class Settings:
     search_max_results: int = 4
 
     @classmethod
-    def from_env(cls) -> "Settings":
+    def from_env(cls) -> Settings:
         _load_dotenv_if_available()
         preset = os.getenv("VOYAGER_MODEL_PRESET", "balanced").strip().lower()
         if preset not in MODEL_PRESETS:
@@ -97,8 +95,8 @@ class Settings:
 
         model_map = dict(MODEL_PRESETS[preset])
         for agent_id in AGENT_IDS:
-            value = os.getenv("VOYAGER_AGENT_MODEL_%s" % agent_id.upper()) or os.getenv(
-                "VOYAGER_MODEL_%s" % agent_id.upper()
+            value = os.getenv(f"VOYAGER_AGENT_MODEL_{agent_id.upper()}") or os.getenv(
+                f"VOYAGER_MODEL_{agent_id.upper()}"
             )
             if value:
                 model_map[agent_id] = value.strip()

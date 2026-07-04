@@ -7,7 +7,6 @@ import json
 import subprocess
 import sys
 from pathlib import Path
-from typing import Optional
 
 from voyager_ai.config import MODEL_PRESETS, MODEL_RATIONALE, Settings, load_settings
 from voyager_ai.constants import VIBES
@@ -15,13 +14,13 @@ from voyager_ai.models import Destination, TravelPreferences, ValidationError, V
 from voyager_ai.planner import TravelPlanner
 
 
-def main(argv: Optional[list[str]] = None) -> int:
+def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     try:
         return args.func(args)
     except (ValidationError, VoyagerError) as exc:
-        print("VoyagerAI error: %s" % exc, file=sys.stderr)
+        print(f"VoyagerAI error: {exc}", file=sys.stderr)
         return 1
     except KeyboardInterrupt:
         print("\nCancelled.", file=sys.stderr)
@@ -44,8 +43,17 @@ def build_parser() -> argparse.ArgumentParser:
     add_common_args(plan)
     plan.add_argument("--destination", required=True, help="Destination city or region.")
     plan.add_argument("--country", required=True, help="Destination country.")
-    plan.add_argument("--why", default="Selected by the user.", help="Short reason for the destination.")
-    plan.add_argument("--tag", action="append", default=[], help="Destination tag. Can be repeated.")
+    plan.add_argument(
+        "--why",
+        default="Selected by the user.",
+        help="Short reason for the destination.",
+    )
+    plan.add_argument(
+        "--tag",
+        action="append",
+        default=[],
+        help="Destination tag. Can be repeated.",
+    )
     plan.add_argument("--out", default="", help="Write markdown to this path.")
     plan.set_defaults(func=cmd_plan)
 
@@ -102,7 +110,13 @@ def cmd_discover(args: argparse.Namespace) -> int:
     planner = TravelPlanner(settings=settings)
     avoid = [item.strip() for item in args.avoid.split(",") if item.strip()]
     destinations = planner.discover_destinations(preferences_from_args(args), avoid=avoid)
-    print(json.dumps([destination.to_dict() for destination in destinations], indent=2, ensure_ascii=False))
+    print(
+        json.dumps(
+            [destination.to_dict() for destination in destinations],
+            indent=2,
+            ensure_ascii=False,
+        )
+    )
     return 0
 
 
@@ -119,16 +133,16 @@ def cmd_plan(args: argparse.Namespace) -> int:
 
     def progress(agent_id: str, status: str, result: object) -> None:
         if status == "running":
-            print("[%s] running..." % agent_id, file=sys.stderr)
+            print(f"[{agent_id}] running...", file=sys.stderr)
         else:
-            print("[%s] %s" % (agent_id, status), file=sys.stderr)
+            print(f"[{agent_id}] {status}", file=sys.stderr)
 
     trip = planner.plan_trip(preferences, destination, progress=progress)
     markdown = trip.to_markdown()
     if args.out:
         path = Path(args.out)
         path.write_text(markdown, encoding="utf-8")
-        print("Wrote %s" % path)
+        print(f"Wrote {path}")
     else:
         print(markdown)
     return 0 if not trip.errors else 2
@@ -137,12 +151,12 @@ def cmd_plan(args: argparse.Namespace) -> int:
 def cmd_models(args: argparse.Namespace) -> int:
     print("Model presets:")
     for preset, mapping in MODEL_PRESETS.items():
-        print("\n[%s]" % preset)
+        print(f"\n[{preset}]")
         for agent_id, model in mapping.items():
-            print("  %-10s %s" % (agent_id, model))
+            print(f"  {agent_id:<10} {model}")
     print("\nRationale:")
     for family, rationale in MODEL_RATIONALE.items():
-        print("  %-18s %s" % (family, rationale))
+        print(f"  {family:<18} {rationale}")
     return 0
 
 

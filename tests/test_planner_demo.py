@@ -10,7 +10,11 @@ from voyager_ai.search import NoopSearchClient
 class PlannerDemoTests(unittest.TestCase):
     def test_demo_discovery_and_plan(self):
         settings = Settings(provider="demo", search_enabled=False)
-        planner = TravelPlanner(settings, llm_client=DemoLLMClient(), search_client=NoopSearchClient())
+        planner = TravelPlanner(
+            settings,
+            llm_client=DemoLLMClient(),
+            search_client=NoopSearchClient(),
+        )
         prefs = TravelPreferences("Mumbai", nationality="Indian", vibe="food")
         destinations = planner.discover_destinations(prefs)
         self.assertEqual(len(destinations), 8)

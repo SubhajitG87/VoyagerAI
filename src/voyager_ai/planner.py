@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from typing import Callable, Dict, Iterable, List, Optional
+from collections.abc import Iterable
+from typing import Callable
 
 from voyager_ai.config import Settings, load_settings
 from voyager_ai.constants import AGENT_SEQUENCE
@@ -18,9 +19,14 @@ from voyager_ai.models import (
 )
 from voyager_ai.parser import extract_json
 from voyager_ai.prompts import DESTINATION_JSON_SCHEMA, agent_prompt, discovery_prompt
-from voyager_ai.search import SearchClient, build_search_client, format_search_context, queries_for_agent
+from voyager_ai.search import (
+    SearchClient,
+    build_search_client,
+    format_search_context,
+    queries_for_agent,
+)
 
-ProgressCallback = Callable[[str, str, Optional[AgentResult]], None]
+ProgressCallback = Callable[[str, str, AgentResult | None], None]
 
 
 class TravelPlanner:
@@ -28,9 +34,9 @@ class TravelPlanner:
 
     def __init__(
         self,
-        settings: Optional[Settings] = None,
-        llm_client: Optional[BaseLLMClient] = None,
-        search_client: Optional[SearchClient] = None,
+        settings: Settings | None = None,
+        llm_client: BaseLLMClient | None = None,
+        search_client: SearchClient | None = None,
     ):
         self.settings = settings or load_settings()
         self.llm = llm_client or build_llm_client(self.settings)
@@ -38,7 +44,7 @@ class TravelPlanner:
 
     def discover_destinations(
         self, preferences: TravelPreferences, avoid: Iterable[str] = ()
-    ) -> List[Destination]:
+    ) -> list[Destination]:
         prompt = discovery_prompt(preferences, avoid=", ".join(avoid))
         response = self.llm.complete(
             agent_id="discovery",
@@ -73,7 +79,8 @@ class TravelPlanner:
             )
         if skipped and len(destinations) < 4:
             raise VoyagerError(
-                "Most destination suggestions were malformed. Try again or use a stronger discovery model."
+                "Most destination suggestions were malformed. Try again or use a stronger "
+                "discovery model."
             )
         return destinations
 
@@ -82,7 +89,7 @@ class TravelPlanner:
         agent_id: str,
         preferences: TravelPreferences,
         destination: Destination,
-        prior_results: Optional[Dict[str, str]] = None,
+        prior_results: dict[str, str] | None = None,
     ) -> AgentResult:
         prior_results = prior_results or {}
         sources = []
@@ -111,10 +118,10 @@ class TravelPlanner:
         self,
         preferences: TravelPreferences,
         destination: Destination,
-        progress: Optional[ProgressCallback] = None,
+        progress: ProgressCallback | None = None,
     ) -> TripPlan:
-        results: Dict[str, AgentResult] = {}
-        prior_text: Dict[str, str] = {}
+        results: dict[str, AgentResult] = {}
+        prior_text: dict[str, str] = {}
 
         for agent_id in AGENT_SEQUENCE:
             if progress:
@@ -143,12 +150,12 @@ def _fallback_agent_content(agent_id: str, exc: Exception) -> str:
         return (
             "## Itinerary unavailable\n"
             "The itinerary agent could not complete this run.\n\n"
-            "Reason: %s\n\n"
+            f"Reason: {exc}\n\n"
             "You can retry after checking model availability and network/search settings."
-        ) % exc
+        )
     return (
         "## Research unavailable\n"
         "This agent could not complete its research.\n\n"
-        "Reason: %s\n\n"
+        f"Reason: {exc}\n\n"
         "The final itinerary agent will continue with the remaining available context."
-    ) % exc
+    )

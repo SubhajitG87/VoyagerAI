@@ -6,7 +6,8 @@ import sys
 import unittest
 from unittest.mock import MagicMock, patch
 
-from voyager_ai.models import Destination, TravelPreferences, SearchResult
+from voyager_ai.config import Settings
+from voyager_ai.models import Destination, SearchResult, TravelPreferences
 from voyager_ai.search import (
     DuckDuckGoSearchClient,
     NoopSearchClient,
@@ -14,7 +15,7 @@ from voyager_ai.search import (
     format_search_context,
     queries_for_agent,
 )
-from voyager_ai.config import Settings
+
 
 class TestNoopSearchClient(unittest.TestCase):
     """The NoopSearchClient always returns empty results."""

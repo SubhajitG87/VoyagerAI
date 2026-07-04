@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import sys
 import unittest
 from unittest.mock import MagicMock, patch
 
@@ -15,13 +14,13 @@ except ImportError:
     TimeoutException = Exception
     _HAVE_HTTPX = False
 
+from voyager_ai.config import Settings
 from voyager_ai.llm import (
     LLMError,
     OllamaClient,
     OpenAICompatibleClient,
     build_llm_client,
 )
-from voyager_ai.config import Settings
 
 
 class TestOllamaClient(unittest.TestCase):

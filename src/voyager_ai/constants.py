@@ -167,7 +167,9 @@ AGENTS = {
     },
     "visa": {
         "label": "Visa Advisor",
-        "description": "Summarises entry rules, documents, fees, stay limits, and official sources.",
+        "description": (
+            "Summarises entry rules, documents, fees, stay limits, and official sources."
+        ),
     },
     "hotel": {
         "label": "Hotel Finder",

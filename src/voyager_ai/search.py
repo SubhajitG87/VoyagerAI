@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import importlib
 import logging
-from typing import Iterable, List
+import sys
+from collections.abc import Iterable
 
 from voyager_ai.config import Settings
 from voyager_ai.models import Destination, SearchResult, TravelPreferences
@@ -12,10 +14,10 @@ logger = logging.getLogger(__name__)
 
 
 class SearchClient:
-    def search(self, query: str, max_results: int = 4) -> List[SearchResult]:
+    def search(self, query: str, max_results: int = 4) -> list[SearchResult]:
         raise NotImplementedError
 
-    def search_many(self, queries: Iterable[str], max_results: int = 4) -> List[SearchResult]:
+    def search_many(self, queries: Iterable[str], max_results: int = 4) -> list[SearchResult]:
         seen = set()
         collected = []
         for query in queries:
@@ -29,20 +31,24 @@ class SearchClient:
 
 
 class NoopSearchClient(SearchClient):
-    def search(self, query: str, max_results: int = 4) -> List[SearchResult]:
+    def search(self, query: str, max_results: int = 4) -> list[SearchResult]:
         return []
 
 
 class DuckDuckGoSearchClient(SearchClient):
     """Tiny wrapper around the optional ddgs / duckduckgo-search package."""
 
-    def search(self, query: str, max_results: int = 4) -> List[SearchResult]:
-        try:
-            try:
-                from ddgs import DDGS
-            except Exception:
-                from duckduckgo_search import DDGS
-        except Exception:
+    def search(self, query: str, max_results: int = 4) -> list[SearchResult]:
+        ddgs_module = None
+        for module_name in ("ddgs", "duckduckgo_search"):
+            if module_name in sys.modules:
+                try:
+                    ddgs_module = importlib.import_module(module_name)
+                    break
+                except Exception:
+                    continue
+
+        if ddgs_module is None:
             logger.warning(
                 "The ddgs/duckduckgo-search package is not installed. "
                 "Install it with `pip install ddgs` to enable live web snippets. "
@@ -51,7 +57,7 @@ class DuckDuckGoSearchClient(SearchClient):
             return []
 
         try:
-            with DDGS() as ddgs:
+            with ddgs_module.DDGS() as ddgs:
                 raw_results = list(ddgs.text(query, max_results=max_results))
         except Exception:
             return []
@@ -76,37 +82,37 @@ def build_search_client(settings: Settings) -> SearchClient:
 
 def queries_for_agent(
     agent_id: str, preferences: TravelPreferences, destination: Destination
-) -> List[str]:
+) -> list[str]:
     destination_name = destination.display_name
     nationality = preferences.nationality_or_default
     if agent_id == "flight":
         return [
-            "%s to %s flights airlines duration fares" % (preferences.departure_city, destination_name),
-            "Google Flights %s to %s best time to book" % (preferences.departure_city, destination_name),
-            "Skyscanner %s to %s route airlines" % (preferences.departure_city, destination_name),
+            f"{preferences.departure_city} to {destination_name} flights airlines duration fares",
+            f"Google Flights {preferences.departure_city} to {destination_name} best time to book",
+            f"Skyscanner {preferences.departure_city} to {destination_name} route airlines",
         ]
     if agent_id == "visa":
         return [
-            "%s passport visa requirements %s official immigration" % (nationality, destination.country),
-            "%s evisa visa on arrival %s official government" % (nationality, destination.country),
-            "%s travel advice entry requirements %s" % (nationality, destination.country),
+            f"{nationality} passport visa requirements {destination.country} official immigration",
+            f"{nationality} evisa visa on arrival {destination.country} official government",
+            f"{nationality} travel advice entry requirements {destination.country}",
         ]
     if agent_id == "hotel":
         return [
-            "best neighbourhoods to stay in %s first time visitor" % destination_name,
-            "Booking.com %s hotels city centre" % destination_name,
-            "%s hotel areas near attractions" % destination_name,
+            f"best neighbourhoods to stay in {destination_name} first time visitor",
+            f"Booking.com {destination_name} hotels city centre",
+            f"{destination_name} hotel areas near attractions",
         ]
     if agent_id == "experience":
         return [
-            "GetYourGuide %s top tours" % destination_name,
-            "best things to do in %s %s days" % (destination_name, preferences.days),
-            "%s %s travel experiences tours" % (destination_name, preferences.vibe),
+            f"GetYourGuide {destination_name} top tours",
+            f"best things to do in {destination_name} {preferences.days} days",
+            f"{destination_name} {preferences.vibe} travel experiences tours",
         ]
     return []
 
 
-def format_search_context(results: List[SearchResult], limit: int = 12) -> str:
+def format_search_context(results: list[SearchResult], limit: int = 12) -> str:
     if not results:
         return (
             "No live web snippets were available. Be explicit when a claim is based on general "
