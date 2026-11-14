@@ -94,6 +94,7 @@ class Settings:
     model_preset: str = "balanced"
     model_map: dict[str, str] = field(default_factory=lambda: dict(MODEL_PRESETS["balanced"]))
     ollama_base_url: str = "http://localhost:11434"
+    ollama_num_ctx: int = 16384
     openai_base_url: str = "http://localhost:1234/v1"
     openai_api_key: str = ""
     request_timeout_s: int = 180
@@ -113,6 +114,7 @@ class Settings:
             model_preset=preset,
             model_map=resolve_model_map(preset),
             ollama_base_url=os.getenv("OLLAMA_BASE_URL", "http://localhost:11434").rstrip("/"),
+            ollama_num_ctx=max(2048, _env_int("VOYAGER_OLLAMA_NUM_CTX", 16384)),
             openai_base_url=os.getenv(
                 "OPENAI_COMPATIBLE_BASE_URL", "http://localhost:1234/v1"
             ).rstrip("/"),

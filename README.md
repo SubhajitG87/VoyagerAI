@@ -104,7 +104,11 @@ VOYAGER_LLM_PROVIDER=ollama
 OLLAMA_BASE_URL=http://localhost:11434
 VOYAGER_MODEL_PRESET=balanced
 VOYAGER_ENABLE_SEARCH=true
+VOYAGER_OLLAMA_NUM_CTX=16384
 ```
+
+`VOYAGER_OLLAMA_NUM_CTX` sets Ollama's context window in tokens. The itinerary agent reads all
+four research reports, so lower it (for example to 8192) only if memory is tight.
 
 Per-agent overrides:
 

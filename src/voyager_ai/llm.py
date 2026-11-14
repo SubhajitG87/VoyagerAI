@@ -40,9 +40,15 @@ class BaseLLMClient:
 class OllamaClient(BaseLLMClient):
     """HTTP client for Ollama's local chat API."""
 
-    def __init__(self, base_url: str = "http://localhost:11434", timeout_s: int = 180):
+    def __init__(
+        self,
+        base_url: str = "http://localhost:11434",
+        timeout_s: int = 180,
+        num_ctx: int = 16384,
+    ):
         self.base_url = base_url.rstrip("/")
         self.timeout_s = timeout_s
+        self.num_ctx = num_ctx
 
     def complete(
         self,
@@ -67,7 +73,11 @@ class OllamaClient(BaseLLMClient):
                 {"role": "user", "content": user},
             ],
             "stream": False,
-            "options": {"temperature": temperature, "num_predict": max_tokens},
+            "options": {
+                "temperature": temperature,
+                "num_predict": max_tokens,
+                "num_ctx": self.num_ctx,
+            },
         }
         if json_schema is not None:
             payload["format"] = json_schema
@@ -185,7 +195,11 @@ class DemoLLMClient(BaseLLMClient):
 def build_llm_client(settings: Settings) -> BaseLLMClient:
     provider = settings.provider.lower()
     if provider == "ollama":
-        return OllamaClient(settings.ollama_base_url, settings.request_timeout_s)
+        return OllamaClient(
+            settings.ollama_base_url,
+            settings.request_timeout_s,
+            settings.ollama_num_ctx,
+        )
     if provider in {"openai-compatible", "openai_compatible", "openai"}:
         return OpenAICompatibleClient(
             settings.openai_base_url,

@@ -23,3 +23,13 @@ def test_use_preset_keeps_env_override(monkeypatch):
     assert settings.model_preset == "quality"
     assert settings.model_map["visa"] == "custom-visa"
     assert settings.model_map["itinerary"] == "llama3.3:70b"
+
+
+def test_ollama_num_ctx_from_env(monkeypatch):
+    monkeypatch.setenv("VOYAGER_OLLAMA_NUM_CTX", "8192")
+    assert Settings.from_env().ollama_num_ctx == 8192
+
+
+def test_ollama_num_ctx_bad_value_uses_default(monkeypatch):
+    monkeypatch.setenv("VOYAGER_OLLAMA_NUM_CTX", "lots")
+    assert Settings.from_env().ollama_num_ctx == 16384

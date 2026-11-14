@@ -124,6 +124,13 @@ class TestOllamaClient(unittest.TestCase):
         )
         self.assertEqual(result.text, "Fallback text")
 
+    def test_num_ctx_sent_in_options(self) -> None:
+        client = OllamaClient(base_url="http://localhost:11434", timeout_s=10, num_ctx=8192)
+        self._mock_response({"message": {"content": "ok"}})
+        client.complete(agent_id="itinerary", model="m", system="", user="x")
+        options = self.mock_httpx.post.call_args[1]["json"]["options"]
+        self.assertEqual(options["num_ctx"], 8192)
+
     def test_timeout_is_passed_to_httpx(self) -> None:
         """Verify that timeout_s is forwarded to the httpx call."""
         client = OllamaClient(base_url="http://localhost:11434", timeout_s=42)

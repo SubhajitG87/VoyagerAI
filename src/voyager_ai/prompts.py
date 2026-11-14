@@ -7,6 +7,9 @@ from dataclasses import dataclass
 from voyager_ai.models import Destination, TravelPreferences
 from voyager_ai.utils import truncate
 
+# Per-agent cap on research text handed to the itinerary agent.
+RESEARCH_CONTEXT_CHARS = 12000
+
 DESTINATION_JSON_SCHEMA = {
     "type": "object",
     "properties": {
@@ -189,7 +192,7 @@ def _itinerary_prompt(
         "and ## Budget Breakdown sections."
     )
     prior = {
-        key: truncate(value, 1100)
+        key: truncate(value, RESEARCH_CONTEXT_CHARS)
         for key, value in prior_results.items()
         if key in {"flight", "visa", "hotel", "experience"}
     }
