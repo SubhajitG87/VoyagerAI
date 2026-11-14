@@ -141,7 +141,11 @@ def cmd_plan(args: argparse.Namespace) -> int:
     markdown = trip.to_markdown()
     if args.out:
         path = Path(args.out)
-        path.write_text(markdown, encoding="utf-8")
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(markdown, encoding="utf-8")
+        except OSError as exc:
+            raise VoyagerError(f"could not write {path}: {exc.strerror or exc}") from exc
         print(f"Wrote {path}")
     else:
         print(markdown)
