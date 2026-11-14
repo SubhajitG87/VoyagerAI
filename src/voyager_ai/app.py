@@ -77,8 +77,7 @@ def sidebar_settings():
             else 1,
         )
         settings.provider = provider
-        settings.model_preset = preset
-        settings.model_map = dict(MODEL_PRESETS[preset])
+        settings.use_preset(preset)
         settings.search_enabled = st.toggle(
             "Use web search snippets",
             value=settings.search_enabled,

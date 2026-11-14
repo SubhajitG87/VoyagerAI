@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 
 MODEL_PRESETS = {
@@ -67,6 +68,20 @@ def _env_int(name: str, default: int) -> int:
         return default
 
 
+def resolve_model_map(preset: str, env: Mapping[str, str] | None = None) -> dict[str, str]:
+    """Return a preset's agent models with per-agent environment overrides applied."""
+
+    source = os.environ if env is None else env
+    model_map = dict(MODEL_PRESETS.get(preset, MODEL_PRESETS["balanced"]))
+    for agent_id in AGENT_IDS:
+        for prefix in ("VOYAGER_AGENT_MODEL_", "VOYAGER_MODEL_"):
+            value = (source.get(f"{prefix}{agent_id.upper()}") or "").strip()
+            if value:
+                model_map[agent_id] = value
+                break
+    return model_map
+
+
 @dataclass
 class Settings:
     """Configurable runtime settings.
@@ -93,18 +108,10 @@ class Settings:
         if preset not in MODEL_PRESETS:
             preset = "balanced"
 
-        model_map = dict(MODEL_PRESETS[preset])
-        for agent_id in AGENT_IDS:
-            value = os.getenv(f"VOYAGER_AGENT_MODEL_{agent_id.upper()}") or os.getenv(
-                f"VOYAGER_MODEL_{agent_id.upper()}"
-            )
-            if value:
-                model_map[agent_id] = value.strip()
-
         return cls(
             provider=os.getenv("VOYAGER_LLM_PROVIDER", "ollama").strip().lower(),
             model_preset=preset,
-            model_map=model_map,
+            model_map=resolve_model_map(preset),
             ollama_base_url=os.getenv("OLLAMA_BASE_URL", "http://localhost:11434").rstrip("/"),
             openai_base_url=os.getenv(
                 "OPENAI_COMPATIBLE_BASE_URL", "http://localhost:1234/v1"
@@ -115,6 +122,12 @@ class Settings:
             search_enabled=_env_bool("VOYAGER_ENABLE_SEARCH", True),
             search_max_results=max(1, _env_int("VOYAGER_SEARCH_MAX_RESULTS", 4)),
         )
+
+    def use_preset(self, preset: str) -> None:
+        """Switch preset while keeping per-agent environment overrides."""
+
+        self.model_preset = preset if preset in MODEL_PRESETS else "balanced"
+        self.model_map = resolve_model_map(self.model_preset)
 
     def model_for(self, agent_id: str) -> str:
         return self.model_map.get(agent_id, self.model_map.get("itinerary", "qwen3:8b"))
