@@ -107,15 +107,34 @@ class TestDuckDuckGoSearchClient(unittest.TestCase):
         self.assertEqual(len(results), 1)
         self.assertEqual(results[0].title, "Fallback Title")
 
+    def test_imports_ddgs_when_not_preloaded(self) -> None:
+        mock_module = MagicMock()
+        mock_module.DDGS.return_value.__enter__.return_value.text.return_value = [
+            {"title": "T", "href": "https://example.com/t", "body": "B"}
+        ]
+        with patch.dict("sys.modules"):
+            sys.modules.pop("ddgs", None)
+            sys.modules.pop("duckduckgo_search", None)
+            with patch(
+                "voyager_ai.search.importlib.import_module", return_value=mock_module
+            ) as importer:
+                results = DuckDuckGoSearchClient().search("q")
+        importer.assert_called_once_with("ddgs")
+        self.assertEqual([r.url for r in results], ["https://example.com/t"])
+
     def test_missing_ddgs_package_returns_empty(self) -> None:
-        old = sys.modules.pop("ddgs", None)
-        try:
-            client = DuckDuckGoSearchClient()
-            results = client.search("anything")
-            self.assertEqual(results, [])
-        finally:
-            if old is not None:
-                sys.modules["ddgs"] = old
+        with patch.dict("sys.modules", {"ddgs": None, "duckduckgo_search": None}):
+            with self.assertLogs("voyager_ai.search", level="WARNING"):
+                self.assertEqual(DuckDuckGoSearchClient().search("anything"), [])
+
+    def test_search_failure_logs_warning(self) -> None:
+        module = self._patch_ddgs([])
+        module.DDGS.return_value.__enter__.return_value.text.side_effect = RuntimeError(
+            "rate limited"
+        )
+        with self.assertLogs("voyager_ai.search", level="WARNING") as logs:
+            self.assertEqual(DuckDuckGoSearchClient().search("q"), [])
+        self.assertIn("rate limited", logs.output[0])
 
 
 class TestBuildSearchClient(unittest.TestCase):
