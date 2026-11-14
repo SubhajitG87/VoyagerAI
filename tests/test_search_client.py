@@ -143,6 +143,10 @@ class TestBuildSearchClient(unittest.TestCase):
         client = build_search_client(settings)
         self.assertIsInstance(client, DuckDuckGoSearchClient)
 
+    def test_demo_provider_never_searches(self) -> None:
+        settings = Settings(provider="demo", search_enabled=True, search_provider="duckduckgo")
+        self.assertIsInstance(build_search_client(settings), NoopSearchClient)
+
     def test_disabled_search_returns_noop(self) -> None:
         settings = Settings(search_enabled=False)
         client = build_search_client(settings)

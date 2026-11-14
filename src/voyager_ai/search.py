@@ -79,6 +79,9 @@ class DuckDuckGoSearchClient(SearchClient):
 def build_search_client(settings: Settings) -> SearchClient:
     if not settings.search_enabled or settings.search_provider in {"none", "off", "disabled"}:
         return NoopSearchClient()
+    if settings.provider == "demo":
+        # Demo mode is documented as a no-network smoke test.
+        return NoopSearchClient()
     if settings.search_provider == "duckduckgo":
         return DuckDuckGoSearchClient()
     return NoopSearchClient()
