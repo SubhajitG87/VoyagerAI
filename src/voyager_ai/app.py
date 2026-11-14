@@ -180,19 +180,22 @@ def destination_panel(planner: TravelPlanner) -> None:
         st.caption("Refreshing asks the discovery agent to avoid the previous destination names.")
 
 
-def render_destination(destination: Destination) -> None:
+def destination_card_html(destination: Destination) -> str:
+    """Build the destination card markup. All model-supplied text is escaped."""
+
     tags = " ".join(f'<span class="pill">{escape(tag)}</span>' for tag in destination.tags)
-    st.markdown(
-        f"""
+    return f"""
         <div class="dest-card">
-          <div class="dest-title">{destination.flag} {escape(destination.name)}</div>
+          <div class="dest-title">{escape(destination.flag)} {escape(destination.name)}</div>
           <div class="dest-country">{escape(destination.country)}</div>
           <p>{escape(destination.why)}</p>
           <div>{tags}</div>
         </div>
-        """,
-        unsafe_allow_html=True,
-    )
+        """
+
+
+def render_destination(destination: Destination) -> None:
+    st.markdown(destination_card_html(destination), unsafe_allow_html=True)
 
 
 def run_trip(

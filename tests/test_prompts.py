@@ -1,5 +1,5 @@
 from voyager_ai.models import Destination, TravelPreferences
-from voyager_ai.prompts import RESEARCH_CONTEXT_CHARS, agent_prompt
+from voyager_ai.prompts import RESEARCH_CONTEXT_CHARS, agent_prompt, discovery_prompt
 
 
 def _itinerary_user(prior):
@@ -21,3 +21,8 @@ def test_itinerary_prompt_caps_oversized_research():
 
 def test_itinerary_prompt_placeholder_for_missing_research():
     assert "No visa research was available." in _itinerary_user({})
+
+
+def test_discovery_prompt_uses_product_name():
+    system = discovery_prompt(TravelPreferences("Mumbai")).system
+    assert "VoyagerAI's travel discovery expert" in system

@@ -49,7 +49,7 @@ class AgentPrompt:
 
 def discovery_prompt(preferences: TravelPreferences, avoid: str = "") -> AgentPrompt:
     system = (
-        "You are VoyageAI's travel discovery expert. Suggest diverse destinations that fit "
+        "You are VoyagerAI's travel discovery expert. Suggest diverse destinations that fit "
         "seasonality, flight practicality, visa ease, trip length, and the user's preferred travel "
         "style. Return only JSON matching this shape: "
         '{"destinations":[{"name":"string","country":"string","flag":"string",'
