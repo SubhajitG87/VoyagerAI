@@ -17,7 +17,13 @@ from voyager_ai.models import (
     dedupe_destinations,
 )
 from voyager_ai.parser import extract_json
-from voyager_ai.prompts import DESTINATION_JSON_SCHEMA, agent_prompt, discovery_prompt
+from voyager_ai.prompts import (
+    DESTINATION_JSON_SCHEMA,
+    RESEARCH_CONTEXT_CHARS,
+    agent_prompt,
+    discovery_prompt,
+    research_chars_for_context,
+)
 from voyager_ai.search import (
     SearchClient,
     build_search_client,
@@ -96,7 +102,14 @@ class TravelPlanner:
             queries = queries_for_agent(agent_id, preferences, destination)
             sources = self.search.search_many(queries, max_results=self.settings.search_max_results)
         search_context = format_search_context(sources)
-        prompt = agent_prompt(agent_id, preferences, destination, search_context, prior_results)
+        prompt = agent_prompt(
+            agent_id,
+            preferences,
+            destination,
+            search_context,
+            prior_results,
+            research_chars=self._research_chars(),
+        )
         response = self.llm.complete(
             agent_id=agent_id,
             model=self.settings.model_for(agent_id),
@@ -112,6 +125,15 @@ class TravelPlanner:
             status="done",
             sources=sources,
         )
+
+    def _research_chars(self) -> int:
+        """How much of each research report the itinerary agent is given."""
+
+        if self.settings.research_context_chars > 0:
+            return self.settings.research_context_chars
+        if self.settings.provider == "ollama":
+            return research_chars_for_context(self.settings.ollama_num_ctx)
+        return RESEARCH_CONTEXT_CHARS
 
     def plan_trip(
         self,

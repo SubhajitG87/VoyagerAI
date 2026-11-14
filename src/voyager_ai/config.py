@@ -95,6 +95,8 @@ class Settings:
     model_map: dict[str, str] = field(default_factory=lambda: dict(MODEL_PRESETS["balanced"]))
     ollama_base_url: str = "http://localhost:11434"
     ollama_num_ctx: int = 16384
+    # Characters of research per agent passed to the itinerary agent. 0 means automatic.
+    research_context_chars: int = 0
     openai_base_url: str = "http://localhost:1234/v1"
     openai_api_key: str = ""
     request_timeout_s: int = 180
@@ -114,7 +116,8 @@ class Settings:
             model_preset=preset,
             model_map=resolve_model_map(preset),
             ollama_base_url=os.getenv("OLLAMA_BASE_URL", "http://localhost:11434").rstrip("/"),
-            ollama_num_ctx=max(2048, _env_int("VOYAGER_OLLAMA_NUM_CTX", 16384)),
+            ollama_num_ctx=max(4096, _env_int("VOYAGER_OLLAMA_NUM_CTX", 16384)),
+            research_context_chars=max(0, _env_int("VOYAGER_RESEARCH_CONTEXT_CHARS", 0)),
             openai_base_url=os.getenv(
                 "OPENAI_COMPATIBLE_BASE_URL", "http://localhost:1234/v1"
             ).rstrip("/"),

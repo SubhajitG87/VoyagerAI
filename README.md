@@ -107,8 +107,13 @@ VOYAGER_ENABLE_SEARCH=true
 VOYAGER_OLLAMA_NUM_CTX=16384
 ```
 
-`VOYAGER_OLLAMA_NUM_CTX` sets Ollama's context window in tokens. The itinerary agent reads all
-four research reports, so lower it (for example to 8192) only if memory is tight.
+`VOYAGER_OLLAMA_NUM_CTX` sets Ollama's context window in tokens (minimum 4096). The itinerary
+agent reads all four research reports. With a smaller window the reports are trimmed to fit, so
+lowering it saves memory at the cost of detail in the final itinerary.
+
+On OpenAI-compatible servers the app cannot see the context size. If your server is loaded with
+a small context, set `VOYAGER_RESEARCH_CONTEXT_CHARS` (for example `1100` for a 4096-token
+window) to limit how much of each report is passed on.
 
 Per-agent overrides:
 

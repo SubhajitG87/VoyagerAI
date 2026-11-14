@@ -33,3 +33,14 @@ def test_ollama_num_ctx_from_env(monkeypatch):
 def test_ollama_num_ctx_bad_value_uses_default(monkeypatch):
     monkeypatch.setenv("VOYAGER_OLLAMA_NUM_CTX", "lots")
     assert Settings.from_env().ollama_num_ctx == 16384
+
+
+def test_ollama_num_ctx_has_a_4096_floor(monkeypatch):
+    monkeypatch.setenv("VOYAGER_OLLAMA_NUM_CTX", "1024")
+    assert Settings.from_env().ollama_num_ctx == 4096
+
+
+def test_research_context_chars_from_env(monkeypatch):
+    assert Settings.from_env().research_context_chars == 0
+    monkeypatch.setenv("VOYAGER_RESEARCH_CONTEXT_CHARS", "5000")
+    assert Settings.from_env().research_context_chars == 5000

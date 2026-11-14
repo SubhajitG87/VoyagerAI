@@ -1,5 +1,10 @@
 from voyager_ai.models import Destination, TravelPreferences
-from voyager_ai.prompts import RESEARCH_CONTEXT_CHARS, agent_prompt, discovery_prompt
+from voyager_ai.prompts import (
+    RESEARCH_CONTEXT_CHARS,
+    agent_prompt,
+    discovery_prompt,
+    research_chars_for_context,
+)
 
 
 def _itinerary_user(prior):
@@ -26,3 +31,10 @@ def test_itinerary_prompt_placeholder_for_missing_research():
 def test_discovery_prompt_uses_product_name():
     system = discovery_prompt(TravelPreferences("Mumbai")).system
     assert "VoyagerAI's travel discovery expert" in system
+
+
+def test_research_budget_scales_with_context_size():
+    assert research_chars_for_context(16384) == 8754
+    assert research_chars_for_context(8192) == 2610
+    assert research_chars_for_context(4096) == 1100
+    assert research_chars_for_context(65536) == RESEARCH_CONTEXT_CHARS

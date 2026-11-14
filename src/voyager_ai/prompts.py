@@ -9,6 +9,20 @@ from voyager_ai.utils import truncate
 
 # Per-agent cap on research text handed to the itinerary agent.
 RESEARCH_CONTEXT_CHARS = 12000
+# Reply budget for the itinerary agent, in tokens.
+ITINERARY_MAX_TOKENS = 4200
+
+
+def research_chars_for_context(num_ctx: int) -> int:
+    """Per-agent research budget, in characters, that fits a context of `num_ctx` tokens.
+
+    The window has to hold four research reports, the instructions (about 512 tokens)
+    and the reply. Three characters per token is a deliberately cautious estimate.
+    """
+
+    prompt_tokens = num_ctx - ITINERARY_MAX_TOKENS - 512
+    return min(RESEARCH_CONTEXT_CHARS, max(1100, prompt_tokens * 3 // 4))
+
 
 DESTINATION_JSON_SCHEMA = {
     "type": "object",
@@ -77,13 +91,17 @@ def agent_prompt(
     destination: Destination,
     search_context: str,
     prior_results: dict[str, str],
+    research_chars: int = RESEARCH_CONTEXT_CHARS,
 ) -> AgentPrompt:
+    if agent_id == "itinerary":
+        return _itinerary_prompt(
+            preferences, destination, search_context, prior_results, research_chars
+        )
     builders = {
         "flight": _flight_prompt,
         "visa": _visa_prompt,
         "hotel": _hotel_prompt,
         "experience": _experience_prompt,
-        "itinerary": _itinerary_prompt,
     }
     return builders[agent_id](preferences, destination, search_context, prior_results)
 
@@ -184,6 +202,7 @@ def _itinerary_prompt(
     destination: Destination,
     search_context: str,
     prior_results: dict[str, str],
+    research_chars: int = RESEARCH_CONTEXT_CHARS,
 ) -> AgentPrompt:
     system = (
         "You are Itinerary Architect, a master travel planner. Write a vivid, practical, "
@@ -192,7 +211,7 @@ def _itinerary_prompt(
         "and ## Budget Breakdown sections."
     )
     prior = {
-        key: truncate(value, RESEARCH_CONTEXT_CHARS)
+        key: truncate(value, research_chars)
         for key, value in prior_results.items()
         if key in {"flight", "visa", "hotel", "experience"}
     }
@@ -229,4 +248,4 @@ def _itinerary_prompt(
         hotel=prior.get("hotel", "No hotel research was available."),
         experience=prior.get("experience", "No experience research was available."),
     )
-    return AgentPrompt(system=system, user=user, temperature=0.35, max_tokens=4200)
+    return AgentPrompt(system=system, user=user, temperature=0.35, max_tokens=ITINERARY_MAX_TOKENS)
