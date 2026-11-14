@@ -137,19 +137,39 @@ def cmd_plan(args: argparse.Namespace) -> int:
         else:
             print(f"[{agent_id}] {status}", file=sys.stderr)
 
+    out_path = _prepare_out_path(args.out)
     trip = planner.plan_trip(preferences, destination, progress=progress)
     markdown = trip.to_markdown()
-    if args.out:
-        path = Path(args.out)
+    if out_path:
+        path = out_path
         try:
-            path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(markdown, encoding="utf-8")
         except OSError as exc:
-            raise VoyagerError(f"could not write {path}: {exc.strerror or exc}") from exc
+            # Do not throw away minutes of model work because of a bad path.
+            print(markdown)
+            raise VoyagerError(
+                f"could not write {path}: {exc.strerror or exc}. "
+                "The plan was printed to standard output instead."
+            ) from exc
         print(f"Wrote {path}")
     else:
         print(markdown)
     return 0 if not trip.errors else 2
+
+
+def _prepare_out_path(out: str) -> Path | None:
+    """Check the --out target before any model call is made."""
+
+    if not out:
+        return None
+    path = Path(out).expanduser()
+    if path.is_dir():
+        raise VoyagerError(f"could not write {path}: it is a directory")
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise VoyagerError(f"could not write {path}: {exc.strerror or exc}") from exc
+    return path
 
 
 def cmd_models(args: argparse.Namespace) -> int:
