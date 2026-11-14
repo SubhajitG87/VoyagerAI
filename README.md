@@ -1,11 +1,10 @@
 # VoyagerAI
-# VoyagerAI
 
 [![CI](https://github.com/SubhajitG87/VoyagerAI/actions/workflows/ci.yml/badge.svg)](https://github.com/SubhajitG87/VoyagerAI/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Python 3.9+](https://img.shields.io/badge/python-3.9%2B-blue.svg)](pyproject.toml)
+[![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](pyproject.toml)
 [![Code style: ruff](https://img.shields.io/badge/code%20style-ruff-000000.svg)](https://github.com/astral-sh/ruff)
-[![Coverage](https://codecov.io/gh/voyager-ai/voyager-ai/branch/main/graph/badge.svg)](https://codecov.io/gh/voyager-ai/voyager-ai)
+[![Coverage](https://codecov.io/gh/SubhajitG87/VoyagerAI/branch/main/graph/badge.svg)](https://codecov.io/gh/SubhajitG87/VoyagerAI)
 
 VoyagerAI is a multi-agent travel research application. The original
 `voyager_ai.jsx` prototype was a single React component that:

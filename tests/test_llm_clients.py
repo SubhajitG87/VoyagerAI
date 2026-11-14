@@ -8,6 +8,7 @@ from unittest.mock import MagicMock, patch
 # Import real httpx exceptions before sys.modules patching intercepts httpx.
 try:
     from httpx import HTTPStatusError, TimeoutException
+
     _HAVE_HTTPX = True
 except ImportError:
     HTTPStatusError = Exception
@@ -44,10 +45,12 @@ class TestOllamaClient(unittest.TestCase):
         return response
 
     def test_successful_completion(self) -> None:
-        self._mock_response({
-            "message": {"content": "Hello from Ollama!"},
-            "model": "qwen3:8b",
-        })
+        self._mock_response(
+            {
+                "message": {"content": "Hello from Ollama!"},
+                "model": "qwen3:8b",
+            }
+        )
         result = self.client.complete(
             agent_id="flight",
             model="qwen3:8b",
@@ -64,10 +67,12 @@ class TestOllamaClient(unittest.TestCase):
         self.assertEqual(payload["model"], "qwen3:8b")
 
     def test_successful_completion_with_schema(self) -> None:
-        self._mock_response({
-            "message": {"content": '{"destinations": [{"name": "Tokyo"}]}'},
-            "model": "qwen3:8b",
-        })
+        self._mock_response(
+            {
+                "message": {"content": '{"destinations": [{"name": "Tokyo"}]}'},
+                "model": "qwen3:8b",
+            }
+        )
         schema = {"type": "object", "properties": {"destinations": {"type": "array"}}}
         result = self.client.complete(
             agent_id="discovery",
@@ -127,9 +132,7 @@ class TestOllamaClient(unittest.TestCase):
             mock_response = MagicMock()
             mock_response.json.return_value = {"message": {"content": "ok"}, "model": "m"}
             mock_httpx.post.return_value = mock_response
-            client.complete(
-                agent_id="itinerary", model="m", system="", user="Plan trip."
-            )
+            client.complete(agent_id="itinerary", model="m", system="", user="Plan trip.")
             self.assertEqual(mock_httpx.post.call_args[1]["timeout"], 42)
 
 
@@ -158,9 +161,7 @@ class TestOpenAICompatibleClient(unittest.TestCase):
         return response
 
     def test_successful_completion(self) -> None:
-        self._mock_response({
-            "choices": [{"message": {"content": "Hello from local server!"}}]
-        })
+        self._mock_response({"choices": [{"message": {"content": "Hello from local server!"}}]})
         result = self.client.complete(
             agent_id="experience",
             model="qwen3:8b",
@@ -237,4 +238,3 @@ class TestBuildLLMClient(unittest.TestCase):
         settings = Settings(provider="unknown-provider")
         with self.assertRaises(LLMError):
             build_llm_client(settings)
-

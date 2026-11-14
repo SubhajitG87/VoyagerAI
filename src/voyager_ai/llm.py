@@ -254,8 +254,7 @@ def _demo_destinations() -> list[dict[str, Any]]:
             "country": "Spain",
             "flag": "ES",
             "why": (
-                "Architecture, beaches, tapas routes, and easy rail trips keep every day "
-                "distinct."
+                "Architecture, beaches, tapas routes, and easy rail trips keep every day distinct."
             ),
             "tags": ["architecture", "beach", "food"],
         },

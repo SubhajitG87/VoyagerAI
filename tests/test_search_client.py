@@ -50,18 +50,20 @@ class TestDuckDuckGoSearchClient(unittest.TestCase):
         return mock_ddgs_module
 
     def test_search_returns_results(self) -> None:
-        self._patch_ddgs([
-            {
-                "title": "Tokyo Travel Guide",
-                "href": "https://example.com/tokyo",
-                "body": "A comprehensive travel guide for Tokyo.",
-            },
-            {
-                "title": "Best Hotels in Tokyo",
-                "href": "https://example.com/hotels",
-                "body": "Top-rated hotels in Tokyo for every budget.",
-            },
-        ])
+        self._patch_ddgs(
+            [
+                {
+                    "title": "Tokyo Travel Guide",
+                    "href": "https://example.com/tokyo",
+                    "body": "A comprehensive travel guide for Tokyo.",
+                },
+                {
+                    "title": "Best Hotels in Tokyo",
+                    "href": "https://example.com/hotels",
+                    "body": "Top-rated hotels in Tokyo for every budget.",
+                },
+            ]
+        )
         client = DuckDuckGoSearchClient()
         results = client.search("Tokyo travel", max_results=2)
         self.assertEqual(len(results), 2)
@@ -70,9 +72,11 @@ class TestDuckDuckGoSearchClient(unittest.TestCase):
         self.assertEqual(results[0].url, "https://example.com/tokyo")
 
     def test_search_returns_empty_when_no_title(self) -> None:
-        self._patch_ddgs([
-            {"title": "", "href": "", "body": "Some content."},
-        ])
+        self._patch_ddgs(
+            [
+                {"title": "", "href": "", "body": "Some content."},
+            ]
+        )
         client = DuckDuckGoSearchClient()
         results = client.search("anything")
         self.assertEqual(len(results), 0)
@@ -89,13 +93,15 @@ class TestDuckDuckGoSearchClient(unittest.TestCase):
         self.assertEqual(results, [])
 
     def test_search_handles_invalid_item_keys(self) -> None:
-        self._patch_ddgs([
-            {
-                "heading": "Fallback Title",
-                "url": "https://example.com/fallback",
-                "snippet": "Fallback snippet.",
-            },
-        ])
+        self._patch_ddgs(
+            [
+                {
+                    "heading": "Fallback Title",
+                    "url": "https://example.com/fallback",
+                    "snippet": "Fallback snippet.",
+                },
+            ]
+        )
         client = DuckDuckGoSearchClient()
         results = client.search("test")
         self.assertEqual(len(results), 1)
@@ -110,6 +116,7 @@ class TestDuckDuckGoSearchClient(unittest.TestCase):
         finally:
             if old is not None:
                 sys.modules["ddgs"] = old
+
 
 class TestBuildSearchClient(unittest.TestCase):
     def test_enabled_duckduckgo(self) -> None:
@@ -187,8 +194,7 @@ class TestFormatSearchContext(unittest.TestCase):
 
     def test_limit_is_respected(self) -> None:
         results = [
-            SearchResult(title=f"Result {i}", url=f"https://example.com/{i}")
-            for i in range(20)
+            SearchResult(title=f"Result {i}", url=f"https://example.com/{i}") for i in range(20)
         ]
         result = format_search_context(results, limit=5)
         self.assertEqual(len(result.splitlines()), 6)
@@ -197,4 +203,3 @@ class TestFormatSearchContext(unittest.TestCase):
         results = [SearchResult(title="No Snippet", url="https://example.com")]
         result = format_search_context(results)
         self.assertIn("No Snippet", result)
-

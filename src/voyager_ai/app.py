@@ -109,8 +109,7 @@ def preferences_panel(planner: TravelPlanner) -> None:
                     value="",
                     placeholder="e.g. Mumbai, London, New York",
                     help=(
-                        "You can type any city. Suggestions from the original app are listed "
-                        "below."
+                        "You can type any city. Suggestions from the original app are listed below."
                     ),
                 )
                 st.caption(f"Examples: {', '.join(CITIES[:8])}")
