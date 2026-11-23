@@ -4,14 +4,36 @@ from __future__ import annotations
 
 import json
 import re
+import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
+import httpx
+
 from voyager_ai.config import Settings
 from voyager_ai.models import VoyagerError
+from voyager_ai.parser import strip_reasoning
+from voyager_ai.retry import RetryableError, parse_retry_after, retry_call
 
 # HTTP statuses a server returns when it does not understand a json_schema response format.
 SCHEMA_REJECTED_STATUSES = {400, 422}
+
+# Transient statuses worth retrying. ReadTimeout is deliberately not retried: a 180 s timeout
+# would otherwise triple.
+RETRYABLE_STATUSES = {429, 500, 502, 503, 504}
+
+
+def _check_response(response: httpx.Response) -> httpx.Response:
+    """Turn transient statuses into RetryableError; raise other HTTP errors as usual."""
+
+    if response.status_code in RETRYABLE_STATUSES:
+        raise RetryableError(
+            f"HTTP {response.status_code}",
+            retry_after=parse_retry_after(response.headers.get("Retry-After")),
+        )
+    response.raise_for_status()
+    return response
 
 
 class LLMError(VoyagerError):
@@ -48,10 +70,16 @@ class OllamaClient(BaseLLMClient):
         base_url: str = "http://localhost:11434",
         timeout_s: int = 180,
         num_ctx: int = 16384,
+        think: str = "false",
+        retries: int = 3,
+        sleep: Callable[[float], None] = time.sleep,
     ):
         self.base_url = base_url.rstrip("/")
         self.timeout_s = timeout_s
         self.num_ctx = num_ctx
+        self.think = think
+        self.retries = retries
+        self.sleep = sleep
 
     def complete(
         self,
@@ -64,11 +92,6 @@ class OllamaClient(BaseLLMClient):
         max_tokens: int = 2800,
         json_schema: dict[str, Any] | None = None,
     ) -> LLMResponse:
-        try:
-            import httpx
-        except Exception as exc:
-            raise LLMError("Install httpx to use the Ollama provider: pip install httpx") from exc
-
         payload: dict[str, Any] = {
             "model": model,
             "messages": [
@@ -82,16 +105,24 @@ class OllamaClient(BaseLLMClient):
                 "num_ctx": self.num_ctx,
             },
         }
+        if self.think in {"true", "false"}:
+            payload["think"] = self.think == "true"
         if json_schema is not None:
             payload["format"] = json_schema
 
+        def attempt() -> httpx.Response:
+            try:
+                response = httpx.post(
+                    f"{self.base_url}/api/chat",
+                    json=payload,
+                    timeout=self.timeout_s,
+                )
+            except (httpx.ConnectError, httpx.RemoteProtocolError) as exc:
+                raise RetryableError(str(exc)) from exc
+            return _check_response(response)
+
         try:
-            response = httpx.post(
-                f"{self.base_url}/api/chat",
-                json=payload,
-                timeout=self.timeout_s,
-            )
-            response.raise_for_status()
+            response = retry_call(attempt, attempts=self.retries, sleep=self.sleep)
         except Exception as exc:
             hint = (
                 f"Could not reach Ollama at {self.base_url}. Start it with `ollama serve` and "
@@ -101,6 +132,7 @@ class OllamaClient(BaseLLMClient):
 
         data = response.json()
         text = (data.get("message") or {}).get("content") or data.get("response") or ""
+        text = strip_reasoning(text)
         if not text.strip():
             raise LLMError(f"Ollama returned an empty response for {agent_id} using {model}.")
         return LLMResponse(text=text.strip(), model=model, raw=data)
@@ -109,10 +141,19 @@ class OllamaClient(BaseLLMClient):
 class OpenAICompatibleClient(BaseLLMClient):
     """Client for local OpenAI-compatible servers such as LM Studio, vLLM, or llama.cpp."""
 
-    def __init__(self, base_url: str, api_key: str = "", timeout_s: int = 180):
+    def __init__(
+        self,
+        base_url: str,
+        api_key: str = "",
+        timeout_s: int = 180,
+        retries: int = 3,
+        sleep: Callable[[float], None] = time.sleep,
+    ):
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
         self.timeout_s = timeout_s
+        self.retries = retries
+        self.sleep = sleep
 
     def complete(
         self,
@@ -125,13 +166,6 @@ class OpenAICompatibleClient(BaseLLMClient):
         max_tokens: int = 2800,
         json_schema: dict[str, Any] | None = None,
     ) -> LLMResponse:
-        try:
-            import httpx
-        except Exception as exc:
-            raise LLMError(
-                "Install httpx to use OpenAI-compatible providers: pip install httpx"
-            ) from exc
-
         headers = {"Content-Type": "application/json"}
         if self.api_key:
             headers["Authorization"] = f"Bearer {self.api_key}"
@@ -154,13 +188,22 @@ class OpenAICompatibleClient(BaseLLMClient):
             }
 
         url = f"{self.base_url}/chat/completions"
+
+        def attempt() -> httpx.Response:
+            try:
+                response = httpx.post(url, json=payload, headers=headers, timeout=self.timeout_s)
+                if json_schema is not None and response.status_code in SCHEMA_REJECTED_STATUSES:
+                    # Older servers only know JSON mode. The parser still validates the result.
+                    fallback = {**payload, "response_format": {"type": "json_object"}}
+                    response = httpx.post(
+                        url, json=fallback, headers=headers, timeout=self.timeout_s
+                    )
+            except (httpx.ConnectError, httpx.RemoteProtocolError) as exc:
+                raise RetryableError(str(exc)) from exc
+            return _check_response(response)
+
         try:
-            response = httpx.post(url, json=payload, headers=headers, timeout=self.timeout_s)
-            if json_schema is not None and response.status_code in SCHEMA_REJECTED_STATUSES:
-                # Older servers only know JSON mode. The parser still validates the result.
-                fallback = {**payload, "response_format": {"type": "json_object"}}
-                response = httpx.post(url, json=fallback, headers=headers, timeout=self.timeout_s)
-            response.raise_for_status()
+            response = retry_call(attempt, attempts=self.retries, sleep=self.sleep)
         except Exception as exc:
             raise LLMError(
                 f"OpenAI-compatible provider failed at {self.base_url} with model {model}: {exc}"
@@ -169,6 +212,7 @@ class OpenAICompatibleClient(BaseLLMClient):
         data = response.json()
         choices = data.get("choices") or []
         text = ((choices[0].get("message") or {}).get("content") if choices else "") or ""
+        text = strip_reasoning(text)
         if not text.strip():
             raise LLMError(
                 f"OpenAI-compatible provider returned an empty response for {agent_id} "
@@ -207,12 +251,15 @@ def build_llm_client(settings: Settings) -> BaseLLMClient:
             settings.ollama_base_url,
             settings.request_timeout_s,
             settings.ollama_num_ctx,
+            think=settings.ollama_think,
+            retries=settings.llm_retries,
         )
     if provider in {"openai-compatible", "openai_compatible", "openai"}:
         return OpenAICompatibleClient(
             settings.openai_base_url,
             settings.openai_api_key,
             settings.request_timeout_s,
+            retries=settings.llm_retries,
         )
     if provider == "demo":
         return DemoLLMClient()

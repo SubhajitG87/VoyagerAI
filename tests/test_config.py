@@ -44,3 +44,10 @@ def test_research_context_chars_from_env(monkeypatch):
     assert Settings.from_env().research_context_chars == 0
     monkeypatch.setenv("VOYAGER_RESEARCH_CONTEXT_CHARS", "5000")
     assert Settings.from_env().research_context_chars == 5000
+
+
+def test_retry_and_think_settings(monkeypatch):
+    monkeypatch.setenv("VOYAGER_LLM_RETRIES", "0")
+    monkeypatch.setenv("VOYAGER_OLLAMA_THINK", "maybe")
+    s = Settings.from_env()
+    assert s.llm_retries == 1 and s.ollama_think == "false"

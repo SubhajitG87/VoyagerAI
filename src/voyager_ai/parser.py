@@ -33,6 +33,15 @@ DAY_RE = re.compile(r"^##\s+Day\s+(\d+)\s*[:\-\u2013\u2014]?\s*(.*)$", re.IGNORE
 HEADING_RE = re.compile(r"^##\s+(.*)$")
 
 
+def strip_reasoning(text: str) -> str:
+    """Remove <think>...</think> blocks. An unclosed <think> means the answer never arrived."""
+
+    text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL)
+    if "<think>" in text:
+        return ""
+    return text.strip()
+
+
 def strip_code_fence(text: str) -> str:
     cleaned = text.strip()
     cleaned = re.sub(r"^```(?:json|JSON)?\s*", "", cleaned)

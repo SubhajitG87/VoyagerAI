@@ -68,6 +68,11 @@ def _env_int(name: str, default: int) -> int:
         return default
 
 
+def _env_think() -> str:
+    value = os.getenv("VOYAGER_OLLAMA_THINK", "false").strip().lower()
+    return value if value in {"false", "true", "default"} else "false"
+
+
 def resolve_model_map(preset: str, env: Mapping[str, str] | None = None) -> dict[str, str]:
     """Return a preset's agent models with per-agent environment overrides applied."""
 
@@ -100,6 +105,9 @@ class Settings:
     openai_base_url: str = "http://localhost:1234/v1"
     openai_api_key: str = ""
     request_timeout_s: int = 180
+    llm_retries: int = 3
+    # Ollama "think" flag: "false" (default), "true", or "default" to leave it to the model.
+    ollama_think: str = "false"
     search_provider: str = "duckduckgo"
     search_enabled: bool = True
     search_max_results: int = 4
@@ -123,6 +131,8 @@ class Settings:
             ).rstrip("/"),
             openai_api_key=os.getenv("OPENAI_COMPATIBLE_API_KEY", ""),
             request_timeout_s=_env_int("VOYAGER_REQUEST_TIMEOUT_S", 180),
+            llm_retries=max(1, _env_int("VOYAGER_LLM_RETRIES", 3)),
+            ollama_think=_env_think(),
             search_provider=os.getenv("VOYAGER_SEARCH_PROVIDER", "duckduckgo").strip().lower(),
             search_enabled=_env_bool("VOYAGER_ENABLE_SEARCH", True),
             search_max_results=max(1, _env_int("VOYAGER_SEARCH_MAX_RESULTS", 4)),

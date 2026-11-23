@@ -24,5 +24,13 @@ class ParserTests(unittest.TestCase):
         self.assertEqual(parsed.extras[0].title, "Practical Tips")
 
 
+def test_strip_reasoning():
+    from voyager_ai.parser import strip_reasoning
+
+    assert strip_reasoning('<think>a\nb</think>\n{"x": 1}') == '{"x": 1}'
+    assert strip_reasoning("<think>never closed") == ""
+    assert strip_reasoning("plain") == "plain"
+
+
 if __name__ == "__main__":
     unittest.main()

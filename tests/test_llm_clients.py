@@ -1,19 +1,12 @@
-"""Mock-based integration tests for LLM clients using sys.modules patching."""
+"""Mock-based tests for LLM clients; httpx.post is patched, so nothing touches the network."""
 
 from __future__ import annotations
 
 import unittest
 from unittest.mock import MagicMock, patch
 
-# Import real httpx exceptions before sys.modules patching intercepts httpx.
-try:
-    from httpx import HTTPStatusError, TimeoutException
-
-    _HAVE_HTTPX = True
-except ImportError:
-    HTTPStatusError = Exception
-    TimeoutException = Exception
-    _HAVE_HTTPX = False
+import httpx
+from httpx import HTTPStatusError, TimeoutException
 
 from voyager_ai.config import Settings
 from voyager_ai.llm import (
@@ -30,11 +23,9 @@ class TestOllamaClient(unittest.TestCase):
     def setUp(self) -> None:
         self.client = OllamaClient(base_url="http://localhost:11434", timeout_s=10)
         self.mock_httpx = MagicMock()
-        self.modules_patch = patch.dict("sys.modules", {"httpx": self.mock_httpx})
-        self.modules_patch.start()
-
-    def tearDown(self) -> None:
-        self.modules_patch.stop()
+        self.post_patch = patch("voyager_ai.llm.httpx.post", self.mock_httpx.post)
+        self.post_patch.start()
+        self.addCleanup(self.post_patch.stop)
 
     def _mock_response(self, json_data: dict, status: int = 200) -> MagicMock:
         response = MagicMock()
@@ -85,7 +76,6 @@ class TestOllamaClient(unittest.TestCase):
         payload = self.mock_httpx.post.call_args[1]["json"]
         self.assertIn("format", payload)
 
-    @unittest.skipIf(not _HAVE_HTTPX, "httpx is not installed")
     def test_http_error_raises_llm_error(self) -> None:
         response = MagicMock()
         response.raise_for_status.side_effect = HTTPStatusError(
@@ -134,13 +124,71 @@ class TestOllamaClient(unittest.TestCase):
     def test_timeout_is_passed_to_httpx(self) -> None:
         """Verify that timeout_s is forwarded to the httpx call."""
         client = OllamaClient(base_url="http://localhost:11434", timeout_s=42)
-        mock_httpx = MagicMock()
-        with patch.dict("sys.modules", {"httpx": mock_httpx}):
-            mock_response = MagicMock()
-            mock_response.json.return_value = {"message": {"content": "ok"}, "model": "m"}
-            mock_httpx.post.return_value = mock_response
-            client.complete(agent_id="itinerary", model="m", system="", user="Plan trip.")
-            self.assertEqual(mock_httpx.post.call_args[1]["timeout"], 42)
+        self._mock_response({"message": {"content": "ok"}, "model": "m"})
+        client.complete(agent_id="itinerary", model="m", system="", user="Plan trip.")
+        self.assertEqual(self.mock_httpx.post.call_args[1]["timeout"], 42)
+
+    def _resp(self, status: int, json_data: dict | None = None, headers: dict | None = None):
+        response = MagicMock()
+        response.status_code = status
+        response.headers = headers or {}
+        response.json.return_value = json_data or {}
+        return response
+
+    def test_ollama_retries_429_using_retry_after(self) -> None:
+        sleeps: list[float] = []
+        client = OllamaClient(timeout_s=10, sleep=sleeps.append)
+        self.mock_httpx.post.side_effect = [
+            self._resp(429, headers={"Retry-After": "3"}),
+            self._resp(200, {"message": {"content": "ok"}}),
+        ]
+        result = client.complete(agent_id="visa", model="m", system="", user="x")
+        self.assertEqual(result.text, "ok")
+        self.assertEqual(sleeps, [3.0])
+        self.assertEqual(self.mock_httpx.post.call_count, 2)
+
+    def test_ollama_does_not_retry_400(self) -> None:
+        response = self._resp(400)
+        response.raise_for_status.side_effect = HTTPStatusError(
+            "400 Bad Request", request=MagicMock(), response=response
+        )
+        self.mock_httpx.post.return_value = response
+        client = OllamaClient(timeout_s=10, sleep=lambda s: None)
+        with self.assertRaises(LLMError):
+            client.complete(agent_id="visa", model="m", system="", user="x")
+        self.assertEqual(self.mock_httpx.post.call_count, 1)
+
+    def test_ollama_retries_connect_error_then_raises_llm_error(self) -> None:
+        client = OllamaClient(timeout_s=10, retries=2, sleep=lambda s: None)
+        self.mock_httpx.post.side_effect = httpx.ConnectError("refused")
+        with self.assertRaises(LLMError) as ctx:
+            client.complete(agent_id="visa", model="m", system="", user="x")
+        self.assertIn("Could not reach Ollama", str(ctx.exception))
+        self.assertEqual(self.mock_httpx.post.call_count, 2)
+
+    def test_ollama_does_not_retry_read_timeout(self) -> None:
+        client = OllamaClient(timeout_s=10, sleep=lambda s: None)
+        self.mock_httpx.post.side_effect = httpx.ReadTimeout("slow")
+        with self.assertRaises(LLMError):
+            client.complete(agent_id="visa", model="m", system="", user="x")
+        self.assertEqual(self.mock_httpx.post.call_count, 1)
+
+    def test_ollama_sends_think_false_by_default(self) -> None:
+        self._mock_response({"message": {"content": "ok"}})
+        self.client.complete(agent_id="visa", model="m", system="", user="x")
+        self.assertIs(self.mock_httpx.post.call_args[1]["json"]["think"], False)
+        for think, expected in (("true", True),):
+            client = OllamaClient(timeout_s=10, think=think)
+            client.complete(agent_id="visa", model="m", system="", user="x")
+            self.assertIs(self.mock_httpx.post.call_args[1]["json"]["think"], expected)
+        client = OllamaClient(timeout_s=10, think="default")
+        client.complete(agent_id="visa", model="m", system="", user="x")
+        self.assertNotIn("think", self.mock_httpx.post.call_args[1]["json"])
+
+    def test_reasoning_is_stripped_from_content(self) -> None:
+        self._mock_response({"message": {"content": '<think>plan</think>\n{"a": 1}'}})
+        result = self.client.complete(agent_id="visa", model="m", system="", user="x")
+        self.assertEqual(result.text, '{"a": 1}')
 
 
 class TestOpenAICompatibleClient(unittest.TestCase):
@@ -153,11 +201,9 @@ class TestOpenAICompatibleClient(unittest.TestCase):
             timeout_s=10,
         )
         self.mock_httpx = MagicMock()
-        self.modules_patch = patch.dict("sys.modules", {"httpx": self.mock_httpx})
-        self.modules_patch.start()
-
-    def tearDown(self) -> None:
-        self.modules_patch.stop()
+        self.post_patch = patch("voyager_ai.llm.httpx.post", self.mock_httpx.post)
+        self.post_patch.start()
+        self.addCleanup(self.post_patch.stop)
 
     def _mock_response(self, json_data: dict) -> MagicMock:
         response = MagicMock()
@@ -194,7 +240,6 @@ class TestOpenAICompatibleClient(unittest.TestCase):
             )
         self.assertIn("empty response", str(ctx.exception).lower())
 
-    @unittest.skipIf(not _HAVE_HTTPX, "httpx is not installed")
     def test_http_error_raises_llm_error(self) -> None:
         response = MagicMock()
         response.raise_for_status.side_effect = TimeoutException("Request timed out")
@@ -236,6 +281,16 @@ class TestOpenAICompatibleClient(unittest.TestCase):
         self._mock_response({"choices": [{"message": {"content": "ok"}}]})
         self.client.complete(agent_id="visa", model="m", system="", user="x")
         self.assertNotIn("response_format", self.mock_httpx.post.call_args[1]["json"])
+
+    def test_openai_compatible_retries_503_then_succeeds(self) -> None:
+        client = OpenAICompatibleClient("http://localhost:1234/v1", sleep=lambda s: None)
+        busy = MagicMock(status_code=503, headers={})
+        ok = MagicMock(status_code=200)
+        ok.json.return_value = {"choices": [{"message": {"content": "ok"}}]}
+        self.mock_httpx.post.side_effect = [busy, ok]
+        result = client.complete(agent_id="visa", model="m", system="", user="x")
+        self.assertEqual(result.text, "ok")
+        self.assertEqual(self.mock_httpx.post.call_count, 2)
 
 
 class TestBuildLLMClient(unittest.TestCase):
