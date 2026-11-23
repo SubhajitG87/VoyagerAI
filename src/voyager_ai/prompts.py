@@ -128,9 +128,16 @@ def itinerary_tokens_for_context(days: int, num_ctx: int) -> int:
     the budget only as far as the window allows once the minimum research is in.
     """
 
+    return max(
+        ITINERARY_MAX_TOKENS, min(itinerary_max_tokens(days), reply_room_for_context(num_ctx))
+    )
+
+
+def reply_room_for_context(num_ctx: int) -> int:
+    """Reply tokens a `num_ctx` window leaves once the instructions and least research fit."""
+
     min_research_tokens = 4 * MIN_RESEARCH_CHARS // 3
-    room = num_ctx - INSTRUCTION_TOKENS - min_research_tokens
-    return max(ITINERARY_MAX_TOKENS, min(itinerary_max_tokens(days), room))
+    return num_ctx - INSTRUCTION_TOKENS - min_research_tokens
 
 
 def research_chars_for_context(num_ctx: int, reply_tokens: int = ITINERARY_MAX_TOKENS) -> int:

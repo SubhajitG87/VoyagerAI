@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
+import threading
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -16,6 +18,9 @@ from voyager_ai.demo import demo_itinerary_payload, demo_research_payload
 from voyager_ai.models import VoyagerError
 from voyager_ai.parser import strip_reasoning
 from voyager_ai.retry import RetryableError, parse_retry_after, retry_call
+from voyager_ai.utils import clean_text
+
+logger = logging.getLogger(__name__)
 
 # HTTP statuses a server returns when it does not understand a json_schema response format.
 SCHEMA_REJECTED_STATUSES = {400, 422}
@@ -23,6 +28,13 @@ SCHEMA_REJECTED_STATUSES = {400, 422}
 # Transient statuses worth retrying. ReadTimeout is deliberately not retried: a 180 s timeout
 # would otherwise triple.
 RETRYABLE_STATUSES = {429, 500, 502, 503, 504}
+# Shortest wait after HTTP 429. NIM's free endpoint counts requests per minute, so a wait of
+# a second or two only spends the next attempt.
+RATE_LIMIT_MIN_DELAY_S = 15.0
+# Characters of a rejected response body quoted in an error.
+BODY_PREVIEW_CHARS = 300
+# Failures that mean the server could not be reached at all.
+_CONNECTION_ERRORS = (httpx.ConnectError, httpx.ConnectTimeout, httpx.RemoteProtocolError)
 
 
 def _check_response(response: httpx.Response) -> httpx.Response:
@@ -32,9 +44,26 @@ def _check_response(response: httpx.Response) -> httpx.Response:
         raise RetryableError(
             f"HTTP {response.status_code}",
             retry_after=parse_retry_after(response.headers.get("Retry-After")),
+            min_delay=RATE_LIMIT_MIN_DELAY_S if response.status_code == 429 else 0.0,
         )
     response.raise_for_status()
     return response
+
+
+def _status_text(exc: httpx.HTTPStatusError) -> str:
+    """'HTTP <status>' plus the start of the response body, which usually says what was wrong."""
+
+    try:
+        body = exc.response.text
+    except Exception:  # a streamed body that could not be read
+        body = ""
+    preview = clean_text(body)[:BODY_PREVIEW_CHARS] if isinstance(body, str) else ""
+    status = f"HTTP {exc.response.status_code}"
+    return f"{status}: {preview}" if preview else status
+
+
+def _is_connection_failure(exc: BaseException) -> bool:
+    return isinstance(exc, _CONNECTION_ERRORS) or isinstance(exc.__cause__, _CONNECTION_ERRORS)
 
 
 class LLMError(VoyagerError):
@@ -75,8 +104,9 @@ class _SchemaRejected(Exception):
     """The server refused a json_schema response format before streaming anything."""
 
 
-# Streaming parsers return (piece, done) for one line; piece is None when the line has no text.
-_LineParser = Callable[[str], "tuple[str | None, bool]"]
+# Streaming parsers return (piece, done, truncated) for one line; piece is None when the line
+# has no text, and truncated is True when the line says the reply hit the token limit.
+_LineParser = Callable[[str], "tuple[str | None, bool, bool]"]
 
 
 def _consume_stream(
@@ -85,8 +115,8 @@ def _consume_stream(
     parse_line: _LineParser,
     on_chunk: ChunkSink,
     rejected_statuses: set[int] | None = None,
-) -> str:
-    """Run one streaming attempt and return the full text.
+) -> tuple[str, bool]:
+    """Run one streaming attempt and return the full text and whether it was cut off.
 
     A connection failure before the first chunk is a RetryableError. Any httpx failure after
     the first chunk raises LLMError, because retrying would replay text already shown.
@@ -95,13 +125,17 @@ def _consume_stream(
 
     parts: list[str] = []
     emitted = 0
+    truncated = False
     try:
         with open_stream() as response:
             if rejected_statuses and response.status_code in rejected_statuses:
                 raise _SchemaRejected
+            if isinstance(response.status_code, int) and response.status_code >= 400:
+                response.read()  # so an error can quote the body
             _check_response(response)
             for line in response.iter_lines():
-                piece, done = parse_line(line)
+                piece, done, cut = parse_line(line)
+                truncated = truncated or cut
                 if piece:
                     parts.append(piece)
                     emitted += len(piece)
@@ -116,24 +150,28 @@ def _consume_stream(
         if isinstance(exc, (httpx.ConnectError, httpx.RemoteProtocolError)):
             raise RetryableError(str(exc)) from exc
         raise
-    return "".join(parts)
+    return "".join(parts), truncated
 
 
-def _parse_ollama_line(line: str) -> tuple[str | None, bool]:
+def _parse_ollama_line(line: str) -> tuple[str | None, bool, bool]:
     if not line.strip():
-        return None, False
+        return None, False, False
     data = json.loads(line)
-    return (data.get("message") or {}).get("content") or None, bool(data.get("done"))
+    piece = (data.get("message") or {}).get("content") or None
+    return piece, bool(data.get("done")), data.get("done_reason") == "length"
 
 
-def _parse_sse_line(line: str) -> tuple[str | None, bool]:
+def _parse_sse_line(line: str) -> tuple[str | None, bool, bool]:
     if not line.startswith("data: "):
-        return None, False
+        return None, False, False
     body = line[len("data: ") :].strip()
     if body == "[DONE]":
-        return None, True
+        return None, True, False
     choices = json.loads(body).get("choices") or []
-    return ((choices[0].get("delta") or {}).get("content") if choices else None) or None, False
+    if not choices:
+        return None, False, False
+    piece = (choices[0].get("delta") or {}).get("content") or None
+    return piece, False, choices[0].get("finish_reason") == "length"
 
 
 @dataclass
@@ -141,6 +179,8 @@ class LLMResponse:
     text: str
     model: str
     raw: dict[str, Any]
+    # True when the reply stopped at the token limit rather than finishing.
+    truncated: bool = False
 
 
 class BaseLLMClient:
@@ -217,7 +257,7 @@ class OllamaClient(BaseLLMClient):
                 raise RetryableError(str(exc)) from exc
             return _check_response(response)
 
-        def attempt_stream() -> str:
+        def attempt_stream() -> tuple[str, bool]:
             return _consume_stream(
                 "Ollama",
                 lambda: httpx.stream("POST", url, json=payload, timeout=self.timeout_s),
@@ -227,25 +267,47 @@ class OllamaClient(BaseLLMClient):
 
         try:
             if on_chunk is not None:
-                text = retry_call(attempt_stream, attempts=self.retries, sleep=self.sleep)
+                text, truncated = retry_call(
+                    attempt_stream, attempts=self.retries, sleep=self.sleep
+                )
                 data: dict[str, Any] = {"streamed": True}
             else:
                 response = retry_call(attempt, attempts=self.retries, sleep=self.sleep)
                 data = response.json()
                 text = (data.get("message") or {}).get("content") or data.get("response") or ""
+                truncated = data.get("done_reason") == "length"
         except LLMError:
             raise
         except Exception as exc:
-            hint = (
-                f"Could not reach Ollama at {self.base_url}. Start it with `ollama serve` and "
-                f"pull the model with `ollama pull {model}`."
-            )
-            raise LLMError(f"{hint} Provider error: {exc}") from exc
+            raise LLMError(self._error_message(exc, model)) from exc
 
         text = strip_reasoning(text)
         if not text.strip():
             raise LLMError(f"Ollama returned an empty response for {agent_id} using {model}.")
-        return LLMResponse(text=text.strip(), model=model, raw=data)
+        return LLMResponse(text=text.strip(), model=model, raw=data, truncated=truncated)
+
+    def _error_message(self, exc: Exception, model: str) -> str:
+        """Explain a failed call. Only a connection failure suggests starting Ollama."""
+
+        if _is_connection_failure(exc):
+            return (
+                f"Could not reach Ollama at {self.base_url}. Start it with `ollama serve` and "
+                f"pull the model with `ollama pull {model}`. Provider error: {exc}"
+            )
+        if isinstance(exc, RetryableError):
+            attempts = max(1, self.retries)
+            return f"Ollama returned {exc} after {attempts} attempts for model {model}."
+        if isinstance(exc, httpx.HTTPStatusError):
+            pull = (
+                f" Pull the model with `ollama pull {model}`."
+                if exc.response.status_code == 404
+                else ""
+            )
+            return (
+                f"Ollama returned {_status_text(exc)} for model {model}.{pull} "
+                f"Provider error: {exc}"
+            )
+        return f"Ollama request to {self.base_url} failed for model {model}. Provider error: {exc}"
 
 
 class OpenAICompatibleClient(BaseLLMClient):
@@ -269,6 +331,21 @@ class OpenAICompatibleClient(BaseLLMClient):
         self.schema_mode = schema_mode
         # Retry with plain JSON mode when the server rejects the schema (HTTP 400 or 422).
         self.fallback = fallback
+        # Models whose schema form this server rejected; they get json_object straight away.
+        self._json_object_models: set[str] = set()
+        self._lock = threading.Lock()
+
+    def _remember_json_object(self, model: str) -> None:
+        with self._lock:
+            if model in self._json_object_models:
+                return
+            self._json_object_models.add(model)
+        logger.warning(
+            "%s rejected the %s response format for %s; sending json_object from now on.",
+            self.base_url,
+            self.schema_mode,
+            model,
+        )
 
     def complete(
         self,
@@ -309,18 +386,35 @@ class OpenAICompatibleClient(BaseLLMClient):
 
         url = f"{self.base_url}/chat/completions"
 
+        def known_rejected() -> bool:
+            return can_fall_back and model in self._json_object_models
+
         def attempt() -> httpx.Response:
+            fell_back = known_rejected()
             try:
-                response = httpx.post(url, json=payload, headers=headers, timeout=self.timeout_s)
-                if can_fall_back and response.status_code in SCHEMA_REJECTED_STATUSES:
+                response = httpx.post(
+                    url,
+                    json=fallback if fell_back else payload,
+                    headers=headers,
+                    timeout=self.timeout_s,
+                )
+                if (
+                    can_fall_back
+                    and not fell_back
+                    and response.status_code in SCHEMA_REJECTED_STATUSES
+                ):
+                    fell_back = True
                     response = httpx.post(
                         url, json=fallback, headers=headers, timeout=self.timeout_s
                     )
             except (httpx.ConnectError, httpx.RemoteProtocolError) as exc:
                 raise RetryableError(str(exc)) from exc
-            return _check_response(response)
+            checked = _check_response(response)
+            if fell_back:
+                self._remember_json_object(model)
+            return checked
 
-        def stream_once(body: dict[str, Any], schema_requested: bool) -> str:
+        def stream_once(body: dict[str, Any], schema_requested: bool) -> tuple[str, bool]:
             return _consume_stream(
                 "OpenAI-compatible provider",
                 lambda: httpx.stream(
@@ -331,26 +425,40 @@ class OpenAICompatibleClient(BaseLLMClient):
                 SCHEMA_REJECTED_STATUSES if schema_requested else None,
             )
 
-        def attempt_stream() -> str:
+        def attempt_stream() -> tuple[str, bool]:
+            if known_rejected():
+                return stream_once(fallback, False)
             try:
                 return stream_once(payload, can_fall_back)
             except _SchemaRejected:
-                return stream_once(fallback, False)
+                result = stream_once(fallback, False)
+                self._remember_json_object(model)
+                return result
 
         try:
             if on_chunk is not None:
-                text = retry_call(attempt_stream, attempts=self.retries, sleep=self.sleep)
+                text, truncated = retry_call(
+                    attempt_stream, attempts=self.retries, sleep=self.sleep
+                )
                 data: dict[str, Any] = {"streamed": True}
             else:
                 response = retry_call(attempt, attempts=self.retries, sleep=self.sleep)
                 data = response.json()
                 choices = data.get("choices") or []
-                text = ((choices[0].get("message") or {}).get("content") if choices else "") or ""
+                first = choices[0] if choices else {}
+                text = (first.get("message") or {}).get("content") or ""
+                truncated = first.get("finish_reason") == "length"
         except LLMError:
             raise
         except Exception as exc:
+            if isinstance(exc, httpx.HTTPStatusError):
+                detail = _status_text(exc)
+            elif isinstance(exc, RetryableError) and not _is_connection_failure(exc):
+                detail = f"{exc} after {max(1, self.retries)} attempts"
+            else:
+                detail = str(exc)
             raise LLMError(
-                f"OpenAI-compatible provider failed at {self.base_url} with model {model}: {exc}"
+                f"OpenAI-compatible provider failed at {self.base_url} with model {model}: {detail}"
             ) from exc
 
         text = strip_reasoning(text)
@@ -359,7 +467,7 @@ class OpenAICompatibleClient(BaseLLMClient):
                 f"OpenAI-compatible provider returned an empty response for {agent_id} "
                 f"using {model}."
             )
-        return LLMResponse(text=text.strip(), model=model, raw=data)
+        return LLMResponse(text=text.strip(), model=model, raw=data, truncated=truncated)
 
 
 class DemoLLMClient(BaseLLMClient):

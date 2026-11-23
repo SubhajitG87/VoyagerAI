@@ -13,7 +13,7 @@ from voyager_ai.config import Settings, load_settings
 from voyager_ai.constants import AGENT_SEQUENCE
 from voyager_ai.events import EventSink, PlanEvent
 from voyager_ai.fetch import NoopFetcher, PageFetcher
-from voyager_ai.llm import BaseLLMClient, ChunkSink, build_llm_client
+from voyager_ai.llm import BaseLLMClient, ChunkSink, LLMResponse, build_llm_client
 from voyager_ai.models import (
     AgentResult,
     Destination,
@@ -25,13 +25,16 @@ from voyager_ai.models import (
 )
 from voyager_ai.parser import extract_json
 from voyager_ai.prompts import (
+    BREVITY_NOTE,
     DESTINATION_JSON_SCHEMA,
+    RESEARCH_BREVITY_NOTE,
     RESEARCH_CONTEXT_CHARS,
     AgentPrompt,
     discovery_prompt,
     itinerary_max_tokens,
     itinerary_prompt,
     itinerary_tokens_for_context,
+    reply_room_for_context,
     research_chars_for_context,
     research_prompt,
 )
@@ -57,6 +60,14 @@ REPAIR_NOTE = (
     "\n\nYour previous reply could not be used: {error}. "
     "Reply again with only JSON that matches the schema."
 )
+CUT_OFF_REPAIR_NOTE = (
+    "\n\nYour previous reply was cut off at the token limit before it was complete, so it "
+    "could not be used: {error}. Reply again with only JSON that matches the schema, and "
+    "make it shorter. {brevity}"
+)
+CUT_OFF_ERROR = "{error}; the reply was cut off at the token limit"
+# A cut-off reply is retried with this much more room, where the context window allows.
+REPAIR_TOKEN_FACTOR = 1.5
 
 
 class TravelPlanner:
@@ -152,6 +163,7 @@ class TravelPlanner:
             RESEARCH_SCHEMA,
             lambda payload: ResearchReport.from_payload(payload, allowed_urls),
             on_chunk,
+            RESEARCH_BREVITY_NOTE,
         )
         return AgentResult(
             agent_id=agent_id,
@@ -185,6 +197,7 @@ class TravelPlanner:
             ITINERARY_SCHEMA,
             lambda payload: Itinerary.from_payload(payload, preferences.days),
             on_chunk,
+            BREVITY_NOTE,
         )
         return AgentResult(
             agent_id="itinerary",
@@ -200,30 +213,57 @@ class TravelPlanner:
         schema: dict[str, Any],
         parse: Callable[[Any], T],
         on_chunk: ChunkSink | None,
+        brevity: str,
     ) -> tuple[T, str]:
         """Call the model for JSON and parse it, with one repair attempt on a bad reply.
 
         The repair attempt is not streamed, so a consumer never sees two replies as one stream.
+        A reply cut off at the token limit is repaired with a request to be brief (`brevity`)
+        and, where the context window allows, a larger reply budget.
         """
 
-        def attempt(user: str, sink: ChunkSink | None) -> tuple[T, str]:
+        def call(user: str, sink: ChunkSink | None, max_tokens: int) -> LLMResponse:
             with self._llm_slots:
-                response = self.llm.complete(
+                return self.llm.complete(
                     agent_id=agent_id,
                     model=self.settings.model_for(agent_id),
                     system=prompt.system,
                     user=user,
                     temperature=prompt.temperature,
-                    max_tokens=prompt.max_tokens,
+                    max_tokens=max_tokens,
                     json_schema=schema,
                     on_chunk=sink,
                 )
-            return parse(extract_json(response.text)), response.text
 
+        first = call(prompt.user, on_chunk, prompt.max_tokens)
         try:
-            return attempt(prompt.user, on_chunk)
+            return parse(extract_json(first.text)), first.text
         except ValidationError as exc:
-            return attempt(prompt.user + REPAIR_NOTE.format(error=exc), None)
+            if first.truncated:
+                user = prompt.user + CUT_OFF_REPAIR_NOTE.format(error=exc, brevity=brevity)
+                max_tokens = self._repair_tokens(prompt, user)
+            else:
+                user = prompt.user + REPAIR_NOTE.format(error=exc)
+                max_tokens = prompt.max_tokens
+        repair = call(user, None, max_tokens)
+        try:
+            return parse(extract_json(repair.text)), repair.text
+        except ValidationError as exc:
+            if repair.truncated:
+                raise ValidationError(CUT_OFF_ERROR.format(error=exc)) from exc
+            raise
+
+    def _repair_tokens(self, prompt: AgentPrompt, user: str) -> int:
+        """A larger reply budget for repairing a cut-off reply, kept inside an Ollama window."""
+
+        raised = int(prompt.max_tokens * REPAIR_TOKEN_FACTOR)
+        if self.settings.provider != "ollama":
+            return raised
+        num_ctx = self.settings.ollama_num_ctx
+        # Three characters per token, the same cautious estimate as the research budget.
+        prompt_tokens = -(-(len(prompt.system) + len(user)) // 3)
+        room = min(reply_room_for_context(num_ctx), num_ctx - prompt_tokens)
+        return max(prompt.max_tokens, min(raised, room))
 
     def _itinerary_tokens(self, days: int) -> int:
         """Reply budget for the itinerary agent, sized to the trip and, on Ollama, the window."""

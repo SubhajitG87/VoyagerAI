@@ -138,17 +138,62 @@ class TestOllamaClient(unittest.TestCase):
         response.json.return_value = json_data or {}
         return response
 
-    def test_ollama_retries_429_using_retry_after(self) -> None:
+    def test_ollama_retries_503_using_retry_after(self) -> None:
         sleeps: list[float] = []
         client = OllamaClient(timeout_s=10, sleep=sleeps.append)
         self.mock_httpx.post.side_effect = [
-            self._resp(429, headers={"Retry-After": "3"}),
+            self._resp(503, headers={"Retry-After": "3"}),
             self._resp(200, {"message": {"content": "ok"}}),
         ]
         result = client.complete(agent_id="visa", model="m", system="", user="x")
         self.assertEqual(result.text, "ok")
         self.assertEqual(sleeps, [3.0])
         self.assertEqual(self.mock_httpx.post.call_count, 2)
+
+    def test_ollama_429_without_retry_after_waits_at_least_15s(self) -> None:
+        sleeps: list[float] = []
+        client = OllamaClient(timeout_s=10, retries=3, sleep=sleeps.append)
+        self.mock_httpx.post.side_effect = [self._resp(429) for _ in range(3)]
+        with self.assertRaises(LLMError) as ctx:
+            client.complete(agent_id="visa", model="m", system="", user="x")
+        self.assertEqual(len(sleeps), 2)
+        self.assertTrue(all(delay >= 15.0 for delay in sleeps), sleeps)
+        message = str(ctx.exception)
+        self.assertIn("Ollama returned HTTP 429 after 3 attempts", message)
+        self.assertNotIn("ollama serve", message)
+
+    def test_ollama_honours_a_60s_retry_after(self) -> None:
+        sleeps: list[float] = []
+        client = OllamaClient(timeout_s=10, sleep=sleeps.append)
+        self.mock_httpx.post.side_effect = [
+            self._resp(429, headers={"Retry-After": "60"}),
+            self._resp(200, {"message": {"content": "ok"}}),
+        ]
+        client.complete(agent_id="visa", model="m", system="", user="x")
+        self.assertEqual(sleeps, [60.0])
+
+    def test_ollama_status_error_does_not_suggest_ollama_serve(self) -> None:
+        response = self._resp(400)
+        response.text = "bad request body"
+        response.raise_for_status.side_effect = HTTPStatusError(
+            "400 Bad Request", request=MagicMock(), response=response
+        )
+        self.mock_httpx.post.return_value = response
+        client = OllamaClient(timeout_s=10, sleep=lambda s: None)
+        with self.assertRaises(LLMError) as ctx:
+            client.complete(agent_id="visa", model="m", system="", user="x")
+        self.assertNotIn("ollama serve", str(ctx.exception))
+        self.assertIn("bad request body", str(ctx.exception))
+
+    def test_ollama_reports_a_cut_off_reply(self) -> None:
+        self._mock_response({"message": {"content": "{"}, "done_reason": "length"})
+        self.assertTrue(
+            self.client.complete(agent_id="a", model="m", system="", user="x").truncated
+        )
+        self._mock_response({"message": {"content": "{}"}, "done_reason": "stop"})
+        self.assertFalse(
+            self.client.complete(agent_id="a", model="m", system="", user="x").truncated
+        )
 
     def test_ollama_does_not_retry_400(self) -> None:
         response = self._resp(400)
@@ -294,6 +339,24 @@ class TestOpenAICompatibleClient(unittest.TestCase):
         result = client.complete(agent_id="visa", model="m", system="", user="x")
         self.assertEqual(result.text, "ok")
         self.assertEqual(self.mock_httpx.post.call_count, 2)
+
+    def test_openai_429_without_retry_after_waits_at_least_15s(self) -> None:
+        sleeps: list[float] = []
+        client = OpenAICompatibleClient("http://x/v1", retries=2, sleep=sleeps.append)
+        ok = MagicMock(status_code=200)
+        ok.json.return_value = {"choices": [{"message": {"content": "ok"}}]}
+        self.mock_httpx.post.side_effect = [MagicMock(status_code=429, headers={}), ok]
+        client.complete(agent_id="visa", model="m", system="", user="x")
+        self.assertEqual(len(sleeps), 1)
+        self.assertGreaterEqual(sleeps[0], 15.0)
+
+    def test_openai_reports_a_cut_off_reply(self) -> None:
+        self._mock_response({"choices": [{"message": {"content": "{"}, "finish_reason": "length"}]})
+        result = self.client.complete(agent_id="a", model="m", system="", user="x")
+        self.assertTrue(result.truncated)
+        self._mock_response({"choices": [{"message": {"content": "{}"}, "finish_reason": "stop"}]})
+        result = self.client.complete(agent_id="a", model="m", system="", user="x")
+        self.assertFalse(result.truncated)
 
 
 class TestBuildLLMClient(unittest.TestCase):
@@ -446,6 +509,54 @@ class TestStreaming(unittest.TestCase):
         self.assertEqual(second["response_format"], {"type": "json_object"})
         self.assertTrue(second["stream"])
 
+    def test_ollama_stream_reports_a_cut_off_reply(self) -> None:
+        self._patch_stream(
+            _stream_ctx(
+                [
+                    '{"message":{"content":"{"},"done":false}',
+                    '{"message":{"content":""},"done":true,"done_reason":"length"}',
+                ]
+            )
+        )
+        result = OllamaClient(sleep=_no_sleep).complete(
+            agent_id="a", model="m", system="s", user="u", on_chunk=lambda _c: None
+        )
+        self.assertTrue(result.truncated)
+
+    def test_openai_stream_reports_a_cut_off_reply(self) -> None:
+        self._patch_stream(
+            _stream_ctx(
+                [
+                    'data: {"choices":[{"delta":{"content":"{"}}]}',
+                    'data: {"choices":[{"delta":{},"finish_reason":"length"}]}',
+                    "data: [DONE]",
+                ]
+            )
+        )
+        result = OpenAICompatibleClient("http://x/v1", sleep=_no_sleep).complete(
+            agent_id="a", model="m", system="s", user="u", on_chunk=lambda _c: None
+        )
+        self.assertTrue(result.truncated)
+
+    def test_openai_stream_remembers_a_rejected_schema(self) -> None:
+        def ok():
+            return _stream_ctx(['data: {"choices":[{"delta":{"content":"{}"}}]}', "data: [DONE]"])
+
+        stream = self._patch_stream(_stream_ctx([], status=400), ok(), ok())
+        client = OpenAICompatibleClient("http://x/v1", sleep=_no_sleep)
+        for _ in range(2):
+            client.complete(
+                agent_id="a",
+                model="m",
+                system="s",
+                user="u",
+                json_schema={"type": "object"},
+                on_chunk=lambda _c: None,
+            )
+        self.assertEqual(stream.call_count, 3)
+        third = stream.call_args_list[2][1]["json"]
+        self.assertEqual(third["response_format"], {"type": "json_object"})
+
     def test_demo_client_streams_three_pieces(self) -> None:
         chunks: list[str] = []
         result = DemoLLMClient().complete(
@@ -537,3 +648,32 @@ def test_schema_mode_setting_overrides_provider_default():
     )
     assert client.schema_mode == "nvext_guided"
     assert build_llm_client(Settings(provider="openai")).schema_mode == "json_schema"
+
+
+def test_rejected_schema_is_remembered_and_logged_once(caplog):
+    client = OpenAICompatibleClient("http://x/v1", sleep=_no_sleep)
+    responses = [MagicMock(status_code=400), _ok_response(), _ok_response(), _ok_response()]
+    with patch("voyager_ai.llm.httpx.post", side_effect=responses) as post:
+        for _ in range(3):
+            client.complete(
+                agent_id="a", model="m", system="", user="u", json_schema={"type": "object"}
+            )
+    sent = [c[1]["json"]["response_format"]["type"] for c in post.call_args_list]
+    assert sent == ["json_schema", "json_object", "json_object", "json_object"]
+    warnings = [r for r in caplog.records if r.levelname == "WARNING"]
+    assert len(warnings) == 1 and "json_object" in warnings[0].getMessage()
+
+
+def test_4xx_error_includes_the_start_of_the_body():
+    client = OpenAICompatibleClient("http://x/v1", fallback=False, sleep=_no_sleep)
+    rejected = MagicMock(status_code=400, text="E" * 299 + "XYZ")
+    rejected.raise_for_status.side_effect = HTTPStatusError(
+        "400", request=MagicMock(), response=rejected
+    )
+    with patch("voyager_ai.llm.httpx.post", return_value=rejected):
+        with pytest.raises(LLMError) as info:
+            client.complete(
+                agent_id="a", model="m", system="", user="u", json_schema={"type": "object"}
+            )
+    assert "E" * 299 + "X" in str(info.value)
+    assert "XY" not in str(info.value)

@@ -13,11 +13,16 @@ T = TypeVar("T")
 
 
 class RetryableError(Exception):
-    """A transient failure worth retrying. ``retry_after`` is the server's hint in seconds."""
+    """A transient failure worth retrying.
 
-    def __init__(self, message: str, retry_after: float | None = None):
+    ``retry_after`` is the server's hint in seconds. ``min_delay`` is the shortest wait before
+    the next attempt, for failures such as a per-minute quota that a short wait cannot clear.
+    """
+
+    def __init__(self, message: str, retry_after: float | None = None, min_delay: float = 0.0):
         super().__init__(message)
         self.retry_after = retry_after
+        self.min_delay = min_delay
 
 
 def retry_call(
@@ -25,7 +30,7 @@ def retry_call(
     *,
     attempts: int = 3,
     base_delay: float = 1.0,
-    max_delay: float = 30.0,
+    max_delay: float = 60.0,
     sleep: Callable[[float], None] = time.sleep,
     random: Callable[[], float] = _random.random,
 ) -> T:
@@ -42,7 +47,7 @@ def retry_call(
                 delay = min(max_delay, exc.retry_after)
             else:
                 delay = min(max_delay, base_delay * 2 ** (n - 1)) * (1 + 0.25 * random())
-            sleep(delay)
+            sleep(max(exc.min_delay, delay))
     raise AssertionError("unreachable")  # pragma: no cover
 
 

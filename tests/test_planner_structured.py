@@ -1,11 +1,14 @@
 import json
 
+import pytest
+
 from voyager_ai.config import Settings
 from voyager_ai.demo import demo_itinerary_payload
 from voyager_ai.fetch import NoopFetcher
 from voyager_ai.llm import DemoLLMClient
-from voyager_ai.models import Destination, SearchResult, TravelPreferences
+from voyager_ai.models import Destination, SearchResult, TravelPreferences, ValidationError
 from voyager_ai.planner import TravelPlanner
+from voyager_ai.prompts import BREVITY_NOTE
 from voyager_ai.render import render_markdown
 from voyager_ai.search import NoopSearchClient, SearchClient
 
@@ -165,3 +168,63 @@ def test_default_fetcher_is_noop_unless_fetching_can_happen():
 def test_no_unreadable_warning_when_fetching_is_off():
     trip = _demo_planner(search=TwoResultSearch(), fetcher=NoopFetcher()).plan_trip(PREFS, DEST)
     assert trip.results["flight"].warnings == []
+
+
+class CutOffLLM(DemoLLMClient):
+    """Itinerary replies from a script of (text, truncated); records each call's request."""
+
+    def __init__(self, replies):
+        self.replies = list(replies)
+        self.requests = []
+
+    def complete(self, *, agent_id, user, max_tokens=2800, **kwargs):
+        response = super().complete(agent_id=agent_id, user=user, max_tokens=max_tokens, **kwargs)
+        if agent_id == "itinerary":
+            self.requests.append({"user": user, "max_tokens": max_tokens})
+            response.text, response.truncated = self.replies.pop(0)
+        return response
+
+
+def _build_itinerary(llm, settings=None):
+    planner = TravelPlanner(
+        settings or Settings(provider="demo"),
+        llm_client=llm,
+        search_client=NoopSearchClient(),
+        fetcher=NoopFetcher(),
+    )
+    return planner.build_itinerary(PREFS, DEST, {})
+
+
+def test_cut_off_reply_gets_a_shorter_repair_with_more_tokens():
+    valid = json.dumps(demo_itinerary_payload(PREFS.days))
+    llm = CutOffLLM([('{"days": [', True), (valid, False)])
+    result = _build_itinerary(llm)
+    assert result.itinerary is not None
+    first, repair = llm.requests
+    assert "cut off" in repair["user"] and BREVITY_NOTE in repair["user"]
+    assert repair["max_tokens"] == first["max_tokens"] * 3 // 2
+
+
+def test_reply_that_was_not_cut_off_keeps_the_plain_repair():
+    valid = json.dumps(demo_itinerary_payload(PREFS.days))
+    llm = CutOffLLM([("not json", False), (valid, False)])
+    _build_itinerary(llm)
+    first, repair = llm.requests
+    assert "could not be used" in repair["user"] and "cut off" not in repair["user"]
+    assert repair["max_tokens"] == first["max_tokens"]
+
+
+def test_ollama_repair_tokens_stay_inside_the_window():
+    valid = json.dumps(demo_itinerary_payload(PREFS.days))
+    llm = CutOffLLM([('{"days": [', True), (valid, False)])
+    _build_itinerary(llm, Settings(provider="ollama", ollama_num_ctx=8192))
+    first, repair = llm.requests
+    # 4200 * 1.5 would be 6300; the 8192 window leaves 6214 (see itinerary_tokens_for_context).
+    assert (first["max_tokens"], repair["max_tokens"]) == (4200, 6214)
+    assert repair["max_tokens"] + len(repair["user"]) // 3 <= 8192
+
+
+def test_repair_that_is_also_cut_off_says_so():
+    llm = CutOffLLM([('{"days": [', True), ('{"days": [', True)])
+    with pytest.raises(ValidationError, match="the reply was cut off at the token limit"):
+        _build_itinerary(llm)

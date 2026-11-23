@@ -4,6 +4,7 @@ from voyager_ai.config import (
     NIM_BASE_URL,
     NIM_MODELS,
     Settings,
+    llm_retries_for,
     resolve_model_map,
 )
 
@@ -119,3 +120,19 @@ def test_llm_concurrency_from_env(monkeypatch):
     assert Settings.from_env().llm_concurrency == 3
     monkeypatch.setenv("VOYAGER_LLM_CONCURRENCY", "-2")
     assert Settings.from_env().llm_concurrency == 0
+
+
+def test_nim_gets_more_retries_by_default(monkeypatch):
+    assert Settings.from_env().llm_retries == 3
+    monkeypatch.setenv("VOYAGER_LLM_PROVIDER", "openai-compatible")
+    assert Settings.from_env().llm_retries == 3
+    monkeypatch.setenv("VOYAGER_LLM_PROVIDER", "nim")
+    assert Settings.from_env().llm_retries == 5
+    assert llm_retries_for("nim") == 5 and llm_retries_for("ollama") == 3
+
+
+def test_explicit_retries_win_over_the_nim_default(monkeypatch):
+    monkeypatch.setenv("VOYAGER_LLM_PROVIDER", "nim")
+    monkeypatch.setenv("VOYAGER_LLM_RETRIES", "2")
+    assert Settings.from_env().llm_retries == 2
+    assert llm_retries_for("nim") == 2

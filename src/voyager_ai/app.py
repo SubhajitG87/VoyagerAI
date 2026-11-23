@@ -6,7 +6,7 @@ from html import escape
 
 import streamlit as st
 
-from voyager_ai.config import MODEL_PRESETS, load_settings
+from voyager_ai.config import MODEL_PRESETS, llm_retries_for, load_settings
 from voyager_ai.constants import AGENT_SEQUENCE, AGENTS, CITIES, NATIONALITIES, VIBES
 from voyager_ai.events import PlanEvent
 from voyager_ai.links import deep_links
@@ -96,6 +96,7 @@ def sidebar_settings():
             else 1,
         )
         settings.provider = provider
+        settings.llm_retries = llm_retries_for(provider)
         settings.use_preset(preset)
         settings.search_enabled = st.toggle(
             "Use web search snippets",

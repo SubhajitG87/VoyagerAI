@@ -53,6 +53,11 @@ NIM_MODELS = {
 }
 NIM_SCHEMA_MODE = "json_schema"
 
+# Model-call attempts. NIM's free endpoint allows about 40 requests a minute account-wide,
+# so it gets more attempts to ride out a quota window.
+DEFAULT_LLM_RETRIES = 3
+NIM_LLM_RETRIES = 5
+
 AGENT_IDS = ("discovery", "flight", "visa", "hotel", "experience", "itinerary")
 
 
@@ -84,6 +89,13 @@ def _env_int(name: str, default: int) -> int:
 def _env_think() -> str:
     value = os.getenv("VOYAGER_OLLAMA_THINK", "false").strip().lower()
     return value if value in {"false", "true", "default"} else "false"
+
+
+def llm_retries_for(provider: str) -> int:
+    """Attempts per model call: VOYAGER_LLM_RETRIES if set, else the provider's default."""
+
+    default = NIM_LLM_RETRIES if provider.strip().lower() == "nim" else DEFAULT_LLM_RETRIES
+    return max(1, _env_int("VOYAGER_LLM_RETRIES", default))
 
 
 def resolve_model_map(
@@ -130,7 +142,8 @@ class Settings:
     # Structured-output mode. "" means the provider default.
     schema_mode: str = ""
     request_timeout_s: int = 180
-    llm_retries: int = 3
+    # Attempts per model call on 429, 5xx and connection errors. from_env uses llm_retries_for.
+    llm_retries: int = DEFAULT_LLM_RETRIES
     # Ollama "think" flag: "false" (default), "true", or "default" to leave it to the model.
     ollama_think: str = "false"
     search_provider: str = "duckduckgo"
@@ -167,7 +180,7 @@ class Settings:
             nvidia_base_url=os.getenv("NVIDIA_BASE_URL", NIM_BASE_URL).rstrip("/"),
             schema_mode=os.getenv("VOYAGER_SCHEMA_MODE", "").strip().lower(),
             request_timeout_s=_env_int("VOYAGER_REQUEST_TIMEOUT_S", 180),
-            llm_retries=max(1, _env_int("VOYAGER_LLM_RETRIES", 3)),
+            llm_retries=llm_retries_for(provider),
             ollama_think=_env_think(),
             search_provider=os.getenv("VOYAGER_SEARCH_PROVIDER", "duckduckgo").strip().lower(),
             search_enabled=_env_bool("VOYAGER_ENABLE_SEARCH", True),

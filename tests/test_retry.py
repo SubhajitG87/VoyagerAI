@@ -27,7 +27,7 @@ def test_retries_then_succeeds():
 
 
 def test_honours_retry_after_and_caps_it():
-    for hint, expected in ((7, 7.0), (120, 30.0)):
+    for hint, expected in ((7, 7.0), (60, 60.0), (120, 60.0)):
         sleeps = []
         with pytest.raises(RetryableError):
             retry_call(
@@ -59,3 +59,26 @@ def test_parse_retry_after():
     assert parse_retry_after("Wed, 21 Oct 2026 07:28:10 GMT", now=now) == 10.0
     assert parse_retry_after("soon") is None
     assert parse_retry_after(None) is None
+
+
+def test_min_delay_is_a_floor_on_every_wait():
+    sleeps = []
+    with pytest.raises(RetryableError):
+        retry_call(
+            _always(RetryableError("429", min_delay=15.0)),
+            attempts=3,
+            sleep=sleeps.append,
+            random=lambda: 0,
+        )
+    assert sleeps == [15.0, 15.0]
+
+
+def test_retry_after_above_min_delay_wins():
+    sleeps = []
+    with pytest.raises(RetryableError):
+        retry_call(
+            _always(RetryableError("429", retry_after=40, min_delay=15.0)),
+            attempts=2,
+            sleep=sleeps.append,
+        )
+    assert sleeps == [40.0]
