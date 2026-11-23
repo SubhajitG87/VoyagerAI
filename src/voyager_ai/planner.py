@@ -48,6 +48,7 @@ from voyager_ai.structured import Itinerary, ResearchReport
 T = TypeVar("T")
 
 RESEARCH_AGENTS = tuple(agent_id for agent_id in AGENT_SEQUENCE if agent_id != "itinerary")
+UNKNOWN_ERROR = "unknown error"
 # How long the drain loop waits for an event before checking whether the agents are done.
 DRAIN_POLL_S = 0.05
 
@@ -249,12 +250,15 @@ class TravelPlanner:
         """Run the four research agents in parallel, then the itinerary agent.
 
         Events are queued by the worker threads and passed to `on_event` on the calling
-        thread only. `plan_finished` is always the last event.
+        thread only. `plan_finished` is always the last event. An `Exception` in an agent
+        becomes that agent's error; any other `BaseException` raised in a worker (such as a
+        test's network guard) also fails the agent, and is re-raised after `plan_finished`.
         """
 
         emit: EventSink = on_event or (lambda event: None)
         events: queue.Queue[PlanEvent] = queue.Queue()
         results: dict[str, AgentResult] = {}
+        fatal: list[BaseException] = []
         executor = ThreadPoolExecutor(
             max_workers=len(RESEARCH_AGENTS), thread_name_prefix="voyager-agent"
         )
@@ -265,6 +269,7 @@ class TravelPlanner:
                     agent_id,
                     partial(self.research, agent_id, preferences, destination),
                     events,
+                    fatal,
                 )
                 for agent_id in RESEARCH_AGENTS
             }
@@ -277,6 +282,7 @@ class TravelPlanner:
                 "itinerary",
                 partial(self.build_itinerary, preferences, destination, dict(results)),
                 events,
+                fatal,
             )
             _drain(events, [itinerary], emit)
             results["itinerary"] = itinerary.result()
@@ -289,6 +295,8 @@ class TravelPlanner:
 
         plan = TripPlan(preferences=preferences, destination=destination, results=results)
         emit(PlanEvent("plan_finished", plan=plan))
+        if fatal:
+            raise fatal[0]
         return plan
 
     def _run_agent(
@@ -296,13 +304,20 @@ class TravelPlanner:
         agent_id: str,
         run: Callable[[ChunkSink], AgentResult],
         events: queue.Queue[PlanEvent],
+        fatal: list[BaseException],
     ) -> AgentResult:
-        """Worker body: run one agent, queueing its events. Never raises."""
+        """Worker body: run one agent, queueing its events. Never raises.
+
+        A `BaseException` that is not an `Exception` is appended to `fatal` for the caller
+        to re-raise once the plan is finished.
+        """
 
         events.put(PlanEvent("agent_started", agent_id))
         try:
             result = run(lambda text: events.put(PlanEvent("agent_chunk", agent_id, text=text)))
-        except BaseException as exc:  # one agent's failure must not end the plan
+        except BaseException as exc:
+            if not isinstance(exc, Exception):
+                fatal.append(exc)
             result = AgentResult(
                 agent_id=agent_id,
                 model=self.settings.model_for(agent_id),
@@ -310,7 +325,8 @@ class TravelPlanner:
                 error=str(exc) or type(exc).__name__,
             )
         if result.status == "error":
-            events.put(PlanEvent("agent_failed", agent_id, text=result.error or "", result=result))
+            text = result.error or UNKNOWN_ERROR
+            events.put(PlanEvent("agent_failed", agent_id, text=text, result=result))
         else:
             events.put(PlanEvent("agent_finished", agent_id, result=result))
         return result

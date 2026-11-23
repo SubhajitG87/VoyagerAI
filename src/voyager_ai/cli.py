@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -12,8 +13,11 @@ from voyager_ai.config import MODEL_PRESETS, MODEL_RATIONALE, Settings, load_set
 from voyager_ai.constants import VIBES
 from voyager_ai.events import PlanEvent
 from voyager_ai.models import Destination, TravelPreferences, ValidationError, VoyagerError
-from voyager_ai.planner import TravelPlanner
+from voyager_ai.planner import UNKNOWN_ERROR, TravelPlanner
 from voyager_ai.render import render_markdown
+
+# Seam for tests: ends the process without waiting for agent threads.
+_hard_exit = os._exit
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -26,6 +30,10 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     except KeyboardInterrupt:
         print("\nCancelled.", file=sys.stderr)
+        sys.stdout.flush()
+        sys.stderr.flush()
+        # Agent threads may still be inside an LLM call; exiting normally would wait for them.
+        _hard_exit(130)
         return 130
 
 
@@ -168,7 +176,7 @@ def _event_line(event: PlanEvent) -> str:
     if event.kind == "agent_started":
         return f"[{agent}] started"
     if event.kind == "agent_failed":
-        return f"[{agent}] failed: {event.text}"
+        return f"[{agent}] failed: {event.text or UNKNOWN_ERROR}"
     if event.kind == "agent_finished":
         result = event.result
         if result is not None and result.itinerary is not None:

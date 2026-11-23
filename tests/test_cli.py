@@ -88,3 +88,37 @@ def test_failed_agent_line(capsys):
     print_event(PlanEvent("agent_failed", "hotel", text="model timed out"))
     print_event(PlanEvent("agent_chunk", "hotel", text="{partial"))
     assert capsys.readouterr().err == "[hotel] failed: model timed out\n"
+
+
+def test_failed_line_falls_back_when_error_is_empty(capsys):
+    from voyager_ai.cli import print_event
+    from voyager_ai.events import PlanEvent
+
+    print_event(PlanEvent("agent_failed", "hotel", text=""))
+    assert capsys.readouterr().err == "[hotel] failed: unknown error\n"
+
+
+def test_ctrl_c_prints_cancelled_then_exits_hard(capsys, monkeypatch):
+    import voyager_ai.cli as cli
+    from voyager_ai.planner import TravelPlanner
+
+    class HardExit(Exception):
+        pass
+
+    codes = []
+
+    def fake_exit(code):
+        codes.append(code)
+        raise HardExit
+
+    def interrupt(self, *args, **kwargs):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(cli, "_hard_exit", fake_exit)
+    monkeypatch.setattr(TravelPlanner, "plan_trip", interrupt)
+    try:
+        main(PLAN)
+    except HardExit:
+        pass
+    assert codes == [130]
+    assert "Cancelled." in capsys.readouterr().err

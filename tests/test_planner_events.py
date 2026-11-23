@@ -196,14 +196,54 @@ def test_failed_llm_call_releases_its_slot():
     assert set(trip.errors) == {"flight"}
 
 
-def test_unexpected_worker_exception_becomes_agent_failed():
+def test_worker_base_exception_fails_the_agent_then_propagates_after_plan_finished():
     events = []
     llm = FailingLLM("hotel", Interrupted("worker blew up"))
-    trip = _plan_within(_demo_planner(llm), on_event=events.append)
-    assert trip.results["hotel"].status == "error"
-    assert [e.kind for e in events if e.agent_id == "hotel"][-1] == "agent_failed"
+    with pytest.raises(Interrupted, match="worker blew up"):
+        _plan_within(_demo_planner(llm), on_event=events.append)
+    hotel = [e for e in events if e.agent_id == "hotel"]
+    assert [e.kind for e in hotel][-1] == "agent_failed"
+    assert hotel[-1].result.status == "error"
     assert [e.kind for e in events].count("plan_finished") == 1
     assert events[-1].kind == "plan_finished"
+    plan = events[-1].plan
+    assert plan.results["hotel"].status == "error"
+    assert plan.results["itinerary"].status == "done"
+
+
+def test_network_guard_in_a_worker_is_not_swallowed():
+    from conftest import NetworkBlocked
+
+    llm = FailingLLM("visa", NetworkBlocked("Network access is blocked in tests"))
+    with pytest.raises(NetworkBlocked):
+        _plan_within(_demo_planner(llm))
+
+
+def test_failed_agent_without_error_text_gets_a_fallback():
+    class EmptyError(DemoLLMClient):
+        def complete(self, *, agent_id, **kwargs):
+            if agent_id == "flight":
+                raise LLMError("")
+            return super().complete(agent_id=agent_id, **kwargs)
+
+    events = []
+    _demo_planner(EmptyError()).plan_trip(PREFS, DEST, on_event=events.append)
+    failed = next(e for e in events if e.kind == "agent_failed")
+    assert failed.text
+
+
+def test_run_agent_falls_back_when_result_error_is_empty():
+    import queue
+
+    from voyager_ai.models import AgentResult
+
+    events = queue.Queue()
+    planner = _demo_planner()
+    planner._run_agent(
+        "flight", lambda sink: AgentResult("flight", "m", status="error"), events, []
+    )
+    kinds = [events.get_nowait() for _ in range(2)]
+    assert kinds[1].kind == "agent_failed" and kinds[1].text == "unknown error"
 
 
 def test_repair_attempt_is_not_streamed():
@@ -263,5 +303,8 @@ def test_finished_event_dict_has_result_summary():
         "findings": len(report.findings),
         "sourced": report.sourced_count,
     }
+    assert "days" not in data["result"]
+    itinerary = next(e for e in events if e.kind == "agent_finished" and e.agent_id == "itinerary")
+    assert itinerary.to_dict()["result"]["days"] == len(trip.itinerary.days)
     assert "plan" not in events[-1].to_dict()
     assert PlanEvent("agent_started", "flight").to_dict()["result"] is None

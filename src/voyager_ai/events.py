@@ -42,7 +42,7 @@ EventSink = Callable[[PlanEvent], None]
 
 def _result_summary(result: AgentResult) -> dict[str, Any]:
     report = result.report
-    return {
+    summary: dict[str, Any] = {
         "status": result.status,
         "model": result.model,
         "error": result.error,
@@ -50,3 +50,6 @@ def _result_summary(result: AgentResult) -> dict[str, Any]:
         "findings": len(report.findings) if report else 0,
         "sourced": report.sourced_count if report else 0,
     }
+    if result.itinerary is not None:
+        summary["days"] = len(result.itinerary.days)
+    return summary
