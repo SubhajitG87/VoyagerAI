@@ -4,13 +4,24 @@ from __future__ import annotations
 
 import importlib
 import logging
-import sys
 from collections.abc import Iterable
+from types import ModuleType
 
 from voyager_ai.config import Settings
 from voyager_ai.models import Destination, SearchResult, TravelPreferences
 
 logger = logging.getLogger(__name__)
+
+
+def _load_ddgs_module() -> ModuleType | None:
+    """Import the search library, preferring the current package name."""
+
+    for module_name in ("ddgs", "duckduckgo_search"):
+        try:
+            return importlib.import_module(module_name)
+        except ImportError:
+            continue
+    return None
 
 
 class SearchClient:
@@ -39,15 +50,7 @@ class DuckDuckGoSearchClient(SearchClient):
     """Tiny wrapper around the optional ddgs / duckduckgo-search package."""
 
     def search(self, query: str, max_results: int = 4) -> list[SearchResult]:
-        ddgs_module = None
-        for module_name in ("ddgs", "duckduckgo_search"):
-            if module_name in sys.modules:
-                try:
-                    ddgs_module = importlib.import_module(module_name)
-                    break
-                except Exception:
-                    continue
-
+        ddgs_module = _load_ddgs_module()
         if ddgs_module is None:
             logger.warning(
                 "The ddgs/duckduckgo-search package is not installed. "
@@ -59,7 +62,8 @@ class DuckDuckGoSearchClient(SearchClient):
         try:
             with ddgs_module.DDGS() as ddgs:
                 raw_results = list(ddgs.text(query, max_results=max_results))
-        except Exception:
+        except Exception as exc:
+            logger.warning("Web search failed for %r: %s", query, exc)
             return []
 
         results = []
@@ -74,6 +78,9 @@ class DuckDuckGoSearchClient(SearchClient):
 
 def build_search_client(settings: Settings) -> SearchClient:
     if not settings.search_enabled or settings.search_provider in {"none", "off", "disabled"}:
+        return NoopSearchClient()
+    if settings.provider == "demo":
+        # Demo mode is documented as a no-network smoke test.
         return NoopSearchClient()
     if settings.search_provider == "duckduckgo":
         return DuckDuckGoSearchClient()

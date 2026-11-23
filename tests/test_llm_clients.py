@@ -8,6 +8,7 @@ from unittest.mock import MagicMock, patch
 # Import real httpx exceptions before sys.modules patching intercepts httpx.
 try:
     from httpx import HTTPStatusError, TimeoutException
+
     _HAVE_HTTPX = True
 except ImportError:
     HTTPStatusError = Exception
@@ -44,10 +45,12 @@ class TestOllamaClient(unittest.TestCase):
         return response
 
     def test_successful_completion(self) -> None:
-        self._mock_response({
-            "message": {"content": "Hello from Ollama!"},
-            "model": "qwen3:8b",
-        })
+        self._mock_response(
+            {
+                "message": {"content": "Hello from Ollama!"},
+                "model": "qwen3:8b",
+            }
+        )
         result = self.client.complete(
             agent_id="flight",
             model="qwen3:8b",
@@ -64,10 +67,12 @@ class TestOllamaClient(unittest.TestCase):
         self.assertEqual(payload["model"], "qwen3:8b")
 
     def test_successful_completion_with_schema(self) -> None:
-        self._mock_response({
-            "message": {"content": '{"destinations": [{"name": "Tokyo"}]}'},
-            "model": "qwen3:8b",
-        })
+        self._mock_response(
+            {
+                "message": {"content": '{"destinations": [{"name": "Tokyo"}]}'},
+                "model": "qwen3:8b",
+            }
+        )
         schema = {"type": "object", "properties": {"destinations": {"type": "array"}}}
         result = self.client.complete(
             agent_id="discovery",
@@ -119,6 +124,13 @@ class TestOllamaClient(unittest.TestCase):
         )
         self.assertEqual(result.text, "Fallback text")
 
+    def test_num_ctx_sent_in_options(self) -> None:
+        client = OllamaClient(base_url="http://localhost:11434", timeout_s=10, num_ctx=8192)
+        self._mock_response({"message": {"content": "ok"}})
+        client.complete(agent_id="itinerary", model="m", system="", user="x")
+        options = self.mock_httpx.post.call_args[1]["json"]["options"]
+        self.assertEqual(options["num_ctx"], 8192)
+
     def test_timeout_is_passed_to_httpx(self) -> None:
         """Verify that timeout_s is forwarded to the httpx call."""
         client = OllamaClient(base_url="http://localhost:11434", timeout_s=42)
@@ -127,9 +139,7 @@ class TestOllamaClient(unittest.TestCase):
             mock_response = MagicMock()
             mock_response.json.return_value = {"message": {"content": "ok"}, "model": "m"}
             mock_httpx.post.return_value = mock_response
-            client.complete(
-                agent_id="itinerary", model="m", system="", user="Plan trip."
-            )
+            client.complete(agent_id="itinerary", model="m", system="", user="Plan trip.")
             self.assertEqual(mock_httpx.post.call_args[1]["timeout"], 42)
 
 
@@ -158,9 +168,7 @@ class TestOpenAICompatibleClient(unittest.TestCase):
         return response
 
     def test_successful_completion(self) -> None:
-        self._mock_response({
-            "choices": [{"message": {"content": "Hello from local server!"}}]
-        })
+        self._mock_response({"choices": [{"message": {"content": "Hello from local server!"}}]})
         result = self.client.complete(
             agent_id="experience",
             model="qwen3:8b",
@@ -200,6 +208,35 @@ class TestOpenAICompatibleClient(unittest.TestCase):
                 user="Flights?",
             )
 
+    def test_schema_is_sent_as_json_schema(self) -> None:
+        self._mock_response({"choices": [{"message": {"content": "{}"}}]})
+        schema = {"type": "object"}
+        self.client.complete(
+            agent_id="discovery", model="m", system="", user="x", json_schema=schema
+        )
+        sent = self.mock_httpx.post.call_args[1]["json"]["response_format"]
+        self.assertEqual(sent["type"], "json_schema")
+        self.assertEqual(sent["json_schema"]["schema"], schema)
+        self.assertEqual(self.mock_httpx.post.call_count, 1)
+
+    def test_falls_back_to_json_mode_when_schema_is_rejected(self) -> None:
+        rejected = MagicMock(status_code=400)
+        accepted = MagicMock(status_code=200)
+        accepted.json.return_value = {"choices": [{"message": {"content": "{}"}}]}
+        self.mock_httpx.post.side_effect = [rejected, accepted]
+        result = self.client.complete(
+            agent_id="discovery", model="m", system="", user="x", json_schema={"type": "object"}
+        )
+        self.assertEqual(result.text, "{}")
+        calls = self.mock_httpx.post.call_args_list
+        self.assertEqual(calls[0][1]["json"]["response_format"]["type"], "json_schema")
+        self.assertEqual(calls[1][1]["json"]["response_format"], {"type": "json_object"})
+
+    def test_no_response_format_without_schema(self) -> None:
+        self._mock_response({"choices": [{"message": {"content": "ok"}}]})
+        self.client.complete(agent_id="visa", model="m", system="", user="x")
+        self.assertNotIn("response_format", self.mock_httpx.post.call_args[1]["json"])
+
 
 class TestBuildLLMClient(unittest.TestCase):
     """Tests for the build_llm_client factory function."""
@@ -237,4 +274,3 @@ class TestBuildLLMClient(unittest.TestCase):
         settings = Settings(provider="unknown-provider")
         with self.assertRaises(LLMError):
             build_llm_client(settings)
-

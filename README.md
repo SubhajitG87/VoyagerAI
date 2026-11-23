@@ -1,14 +1,13 @@
 # VoyagerAI
-# VoyagerAI
 
 [![CI](https://github.com/SubhajitG87/VoyagerAI/actions/workflows/ci.yml/badge.svg)](https://github.com/SubhajitG87/VoyagerAI/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Python 3.9+](https://img.shields.io/badge/python-3.9%2B-blue.svg)](pyproject.toml)
+[![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](pyproject.toml)
 [![Code style: ruff](https://img.shields.io/badge/code%20style-ruff-000000.svg)](https://github.com/astral-sh/ruff)
-[![Coverage](https://codecov.io/gh/voyager-ai/voyager-ai/branch/main/graph/badge.svg)](https://codecov.io/gh/voyager-ai/voyager-ai)
+[![Coverage](https://codecov.io/gh/SubhajitG87/VoyagerAI/branch/main/graph/badge.svg)](https://codecov.io/gh/SubhajitG87/VoyagerAI)
 
-VoyagerAI is a multi-agent travel research application. The original
-`voyager_ai.jsx` prototype was a single React component that:
+VoyagerAI is a multi-agent travel research application. It began as a single-file React
+prototype (not included in this repository) that:
 
 1. Collects a traveller profile: departure city, nationality, travel window, trip length,
    direct-flight preference, and travel style.
@@ -105,7 +104,20 @@ VOYAGER_LLM_PROVIDER=ollama
 OLLAMA_BASE_URL=http://localhost:11434
 VOYAGER_MODEL_PRESET=balanced
 VOYAGER_ENABLE_SEARCH=true
+VOYAGER_OLLAMA_NUM_CTX=16384
 ```
+
+`VOYAGER_OLLAMA_NUM_CTX` sets Ollama's context window in tokens (minimum 4096). The itinerary
+agent reads all four research reports. With a smaller window the reports are trimmed to fit, so
+lowering it saves memory at the cost of detail in the final itinerary.
+
+The itinerary agent's reply budget grows with trip length (about 260 tokens a day, at least
+4200). Trips longer than about two weeks need the default 16384-token window or more; with a
+smaller one the reply budget is capped and the last days, tips or budget may be cut off.
+
+On OpenAI-compatible servers the app cannot see the context size. If your server is loaded with
+a small context, set `VOYAGER_RESEARCH_CONTEXT_CHARS` (for example `1100` for a 4096-token
+window) to limit how much of each report is passed on.
 
 Per-agent overrides:
 

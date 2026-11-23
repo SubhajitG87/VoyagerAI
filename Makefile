@@ -13,10 +13,12 @@ demo:
 	VOYAGER_LLM_PROVIDER=demo python3 -m streamlit run src/voyager_ai/app.py
 
 test:
-	PYTHONPATH=src python3 -m unittest discover -s tests
+	python3 -m pytest
 
 lint:
 	ruff check src tests
+	ruff format --check src tests
+	mypy --config-file mypy.ini src
 
 format:
 	ruff format src tests

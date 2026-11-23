@@ -10,6 +10,9 @@ from typing import Any
 from voyager_ai.config import Settings
 from voyager_ai.models import VoyagerError
 
+# HTTP statuses a server returns when it does not understand a json_schema response format.
+SCHEMA_REJECTED_STATUSES = {400, 422}
+
 
 class LLMError(VoyagerError):
     """Raised when an LLM provider cannot complete a request."""
@@ -40,9 +43,15 @@ class BaseLLMClient:
 class OllamaClient(BaseLLMClient):
     """HTTP client for Ollama's local chat API."""
 
-    def __init__(self, base_url: str = "http://localhost:11434", timeout_s: int = 180):
+    def __init__(
+        self,
+        base_url: str = "http://localhost:11434",
+        timeout_s: int = 180,
+        num_ctx: int = 16384,
+    ):
         self.base_url = base_url.rstrip("/")
         self.timeout_s = timeout_s
+        self.num_ctx = num_ctx
 
     def complete(
         self,
@@ -67,7 +76,11 @@ class OllamaClient(BaseLLMClient):
                 {"role": "user", "content": user},
             ],
             "stream": False,
-            "options": {"temperature": temperature, "num_predict": max_tokens},
+            "options": {
+                "temperature": temperature,
+                "num_predict": max_tokens,
+                "num_ctx": self.num_ctx,
+            },
         }
         if json_schema is not None:
             payload["format"] = json_schema
@@ -133,15 +146,20 @@ class OpenAICompatibleClient(BaseLLMClient):
             "max_tokens": max_tokens,
         }
         if json_schema is not None:
-            payload["response_format"] = {"type": "json_object"}
+            # Ask for the schema itself, not just "some JSON". LM Studio, vLLM and
+            # llama.cpp server accept this form.
+            payload["response_format"] = {
+                "type": "json_schema",
+                "json_schema": {"name": f"{agent_id}_response", "schema": json_schema},
+            }
 
+        url = f"{self.base_url}/chat/completions"
         try:
-            response = httpx.post(
-                f"{self.base_url}/chat/completions",
-                json=payload,
-                headers=headers,
-                timeout=self.timeout_s,
-            )
+            response = httpx.post(url, json=payload, headers=headers, timeout=self.timeout_s)
+            if json_schema is not None and response.status_code in SCHEMA_REJECTED_STATUSES:
+                # Older servers only know JSON mode. The parser still validates the result.
+                fallback = {**payload, "response_format": {"type": "json_object"}}
+                response = httpx.post(url, json=fallback, headers=headers, timeout=self.timeout_s)
             response.raise_for_status()
         except Exception as exc:
             raise LLMError(
@@ -185,7 +203,11 @@ class DemoLLMClient(BaseLLMClient):
 def build_llm_client(settings: Settings) -> BaseLLMClient:
     provider = settings.provider.lower()
     if provider == "ollama":
-        return OllamaClient(settings.ollama_base_url, settings.request_timeout_s)
+        return OllamaClient(
+            settings.ollama_base_url,
+            settings.request_timeout_s,
+            settings.ollama_num_ctx,
+        )
     if provider in {"openai-compatible", "openai_compatible", "openai"}:
         return OpenAICompatibleClient(
             settings.openai_base_url,
@@ -254,8 +276,7 @@ def _demo_destinations() -> list[dict[str, Any]]:
             "country": "Spain",
             "flag": "ES",
             "why": (
-                "Architecture, beaches, tapas routes, and easy rail trips keep every day "
-                "distinct."
+                "Architecture, beaches, tapas routes, and easy rail trips keep every day distinct."
             ),
             "tags": ["architecture", "beach", "food"],
         },
@@ -304,7 +325,7 @@ def _demo_itinerary(user: str) -> str:
     days_match = re.search(r"\((\d+)\s+days\)", user)
     days = int(days_match.group(1)) if days_match else 8
     lines = []
-    for day in range(1, min(days, 10) + 1):
+    for day in range(1, days + 1):
         lines.extend(
             [
                 f"## Day {day} - Demo Day {day}",

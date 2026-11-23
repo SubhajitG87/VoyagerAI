@@ -77,8 +77,7 @@ def sidebar_settings():
             else 1,
         )
         settings.provider = provider
-        settings.model_preset = preset
-        settings.model_map = dict(MODEL_PRESETS[preset])
+        settings.use_preset(preset)
         settings.search_enabled = st.toggle(
             "Use web search snippets",
             value=settings.search_enabled,
@@ -109,8 +108,7 @@ def preferences_panel(planner: TravelPlanner) -> None:
                     value="",
                     placeholder="e.g. Mumbai, London, New York",
                     help=(
-                        "You can type any city. Suggestions from the original app are listed "
-                        "below."
+                        "You can type any city. Suggestions from the original app are listed below."
                     ),
                 )
                 st.caption(f"Examples: {', '.join(CITIES[:8])}")
@@ -139,10 +137,11 @@ def preferences_panel(planner: TravelPlanner) -> None:
                 prefs = TravelPreferences(
                     departure_city=departure_city,
                     nationality=nationality,
-                    months=months,
+                    # Both widgets have a default selected; the fallbacks only satisfy typing.
+                    months=months or 6,
                     direct_flights=direct,
                     nights=nights,
-                    vibe=vibe_label_to_id[vibe_label],
+                    vibe=vibe_label_to_id.get(vibe_label or "", "city"),
                 )
                 st.session_state.preferences = prefs
                 st.session_state.trip = None
@@ -171,30 +170,59 @@ def destination_panel(planner: TravelPlanner) -> None:
 
     col1, col2 = st.columns([1, 3])
     with col1:
-        if st.button("Different destinations", use_container_width=True):
-            st.session_state.avoid_destinations.extend([d.name for d in destinations])
-            with st.spinner("Refreshing destination ideas..."):
-                st.session_state.destinations = planner.discover_destinations(
-                    preferences, avoid=st.session_state.avoid_destinations
-                )
-            st.rerun()
+        refresh = st.button("Different destinations", use_container_width=True)
     with col2:
         st.caption("Refreshing asks the discovery agent to avoid the previous destination names.")
 
+    if refresh:
+        avoid = merge_avoid_list(
+            st.session_state.avoid_destinations, [d.name for d in destinations]
+        )
+        try:
+            with st.spinner("Refreshing destination ideas..."):
+                fresh = planner.discover_destinations(preferences, avoid=avoid)
+        except (ValidationError, VoyagerError) as exc:
+            # Keep the current cards on screen so the user can still pick one.
+            st.error(str(exc))
+            return
+        st.session_state.avoid_destinations = avoid
+        st.session_state.destinations = fresh
+        st.rerun()
 
-def render_destination(destination: Destination) -> None:
+
+# Most destination names sent back to the discovery agent as "avoid these".
+MAX_AVOID_DESTINATIONS = 24
+
+
+def merge_avoid_list(current: list[str], new: list[str]) -> list[str]:
+    """Add names to the avoid list without duplicates, keeping only the most recent ones."""
+
+    merged: list[str] = []
+    seen: set[str] = set()
+    for name in reversed([*current, *new]):
+        key = name.strip().lower()
+        if key and key not in seen:
+            seen.add(key)
+            merged.append(name)
+    return list(reversed(merged[:MAX_AVOID_DESTINATIONS]))
+
+
+def destination_card_html(destination: Destination) -> str:
+    """Build the destination card markup. All model-supplied text is escaped."""
+
     tags = " ".join(f'<span class="pill">{escape(tag)}</span>' for tag in destination.tags)
-    st.markdown(
-        f"""
+    return f"""
         <div class="dest-card">
-          <div class="dest-title">{destination.flag} {escape(destination.name)}</div>
+          <div class="dest-title">{escape(destination.flag)} {escape(destination.name)}</div>
           <div class="dest-country">{escape(destination.country)}</div>
           <p>{escape(destination.why)}</p>
           <div>{tags}</div>
         </div>
-        """,
-        unsafe_allow_html=True,
-    )
+        """
+
+
+def render_destination(destination: Destination) -> None:
+    st.markdown(destination_card_html(destination), unsafe_allow_html=True)
 
 
 def run_trip(
