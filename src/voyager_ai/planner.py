@@ -22,6 +22,8 @@ from voyager_ai.prompts import (
     RESEARCH_CONTEXT_CHARS,
     agent_prompt,
     discovery_prompt,
+    itinerary_max_tokens,
+    itinerary_tokens_for_context,
     research_chars_for_context,
 )
 from voyager_ai.search import (
@@ -102,13 +104,15 @@ class TravelPlanner:
             queries = queries_for_agent(agent_id, preferences, destination)
             sources = self.search.search_many(queries, max_results=self.settings.search_max_results)
         search_context = format_search_context(sources)
+        itinerary_tokens = self._itinerary_tokens(preferences.days)
         prompt = agent_prompt(
             agent_id,
             preferences,
             destination,
             search_context,
             prior_results,
-            research_chars=self._research_chars(),
+            research_chars=self._research_chars(itinerary_tokens),
+            itinerary_tokens=itinerary_tokens,
         )
         response = self.llm.complete(
             agent_id=agent_id,
@@ -126,13 +130,20 @@ class TravelPlanner:
             sources=sources,
         )
 
-    def _research_chars(self) -> int:
+    def _itinerary_tokens(self, days: int) -> int:
+        """Reply budget for the itinerary agent, sized to the trip and, on Ollama, the window."""
+
+        if self.settings.provider == "ollama":
+            return itinerary_tokens_for_context(days, self.settings.ollama_num_ctx)
+        return itinerary_max_tokens(days)
+
+    def _research_chars(self, itinerary_tokens: int) -> int:
         """How much of each research report the itinerary agent is given."""
 
         if self.settings.research_context_chars > 0:
             return self.settings.research_context_chars
         if self.settings.provider == "ollama":
-            return research_chars_for_context(self.settings.ollama_num_ctx)
+            return research_chars_for_context(self.settings.ollama_num_ctx, itinerary_tokens)
         return RESEARCH_CONTEXT_CHARS
 
     def plan_trip(

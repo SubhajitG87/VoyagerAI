@@ -9,19 +9,46 @@ from voyager_ai.utils import truncate
 
 # Per-agent cap on research text handed to the itinerary agent.
 RESEARCH_CONTEXT_CHARS = 12000
-# Reply budget for the itinerary agent, in tokens.
+# Smallest reply budget for the itinerary agent, in tokens.
 ITINERARY_MAX_TOKENS = 4200
+# Reply tokens allowed per itinerary day, plus a fixed share for tips and budget.
+ITINERARY_TOKENS_PER_DAY = 260
+ITINERARY_FIXED_TOKENS = 1200
+# Trips longer than this get an instruction to keep each day short.
+LONG_TRIP_DAYS = 10
+# Floor on research per agent, in characters.
+MIN_RESEARCH_CHARS = 1100
+# Tokens kept for the itinerary instructions.
+INSTRUCTION_TOKENS = 512
 
 
-def research_chars_for_context(num_ctx: int) -> int:
+def itinerary_max_tokens(days: int) -> int:
+    """Reply budget that leaves room for every day plus the tips and budget sections."""
+
+    return max(ITINERARY_MAX_TOKENS, days * ITINERARY_TOKENS_PER_DAY + ITINERARY_FIXED_TOKENS)
+
+
+def itinerary_tokens_for_context(days: int, num_ctx: int) -> int:
+    """Reply budget for a trip of `days` days that still fits a context of `num_ctx` tokens.
+
+    Never below ITINERARY_MAX_TOKENS, so short trips behave as before. Longer trips grow
+    the budget only as far as the window allows once the minimum research is in.
+    """
+
+    min_research_tokens = 4 * MIN_RESEARCH_CHARS // 3
+    room = num_ctx - INSTRUCTION_TOKENS - min_research_tokens
+    return max(ITINERARY_MAX_TOKENS, min(itinerary_max_tokens(days), room))
+
+
+def research_chars_for_context(num_ctx: int, reply_tokens: int = ITINERARY_MAX_TOKENS) -> int:
     """Per-agent research budget, in characters, that fits a context of `num_ctx` tokens.
 
     The window has to hold four research reports, the instructions (about 512 tokens)
     and the reply. Three characters per token is a deliberately cautious estimate.
     """
 
-    prompt_tokens = num_ctx - ITINERARY_MAX_TOKENS - 512
-    return min(RESEARCH_CONTEXT_CHARS, max(1100, prompt_tokens * 3 // 4))
+    prompt_tokens = num_ctx - reply_tokens - INSTRUCTION_TOKENS
+    return min(RESEARCH_CONTEXT_CHARS, max(MIN_RESEARCH_CHARS, prompt_tokens * 3 // 4))
 
 
 DESTINATION_JSON_SCHEMA = {
@@ -92,10 +119,16 @@ def agent_prompt(
     search_context: str,
     prior_results: dict[str, str],
     research_chars: int = RESEARCH_CONTEXT_CHARS,
+    itinerary_tokens: int | None = None,
 ) -> AgentPrompt:
     if agent_id == "itinerary":
         return _itinerary_prompt(
-            preferences, destination, search_context, prior_results, research_chars
+            preferences,
+            destination,
+            search_context,
+            prior_results,
+            research_chars,
+            itinerary_tokens,
         )
     builders = {
         "flight": _flight_prompt,
@@ -203,6 +236,7 @@ def _itinerary_prompt(
     search_context: str,
     prior_results: dict[str, str],
     research_chars: int = RESEARCH_CONTEXT_CHARS,
+    max_tokens: int | None = None,
 ) -> AgentPrompt:
     system = (
         "You are Itinerary Architect, a master travel planner. Write a vivid, practical, "
@@ -234,6 +268,7 @@ def _itinerary_prompt(
         "For Budget Breakdown include return economy flights, mid-range hotels for "
         "{nights} nights, food per day, activities total, local transport, and grand total "
         "range in USD. Keep the schedule realistic and include rest/buffer time."
+        "{brevity}"
     ).format(
         nights=preferences.nights,
         days=preferences.days,
@@ -247,5 +282,16 @@ def _itinerary_prompt(
         visa=prior.get("visa", "No visa research was available."),
         hotel=prior.get("hotel", "No hotel research was available."),
         experience=prior.get("experience", "No experience research was available."),
+        brevity=(
+            "\nThis is a long trip. Keep each Morning, Afternoon and Evening to one or two "
+            "sentences so that every day, the Practical Tips and the Budget Breakdown fit."
+            if preferences.days > LONG_TRIP_DAYS
+            else ""
+        ),
     )
-    return AgentPrompt(system=system, user=user, temperature=0.35, max_tokens=ITINERARY_MAX_TOKENS)
+    return AgentPrompt(
+        system=system,
+        user=user,
+        temperature=0.35,
+        max_tokens=max_tokens or itinerary_max_tokens(preferences.days),
+    )

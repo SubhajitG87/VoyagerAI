@@ -208,6 +208,35 @@ class TestOpenAICompatibleClient(unittest.TestCase):
                 user="Flights?",
             )
 
+    def test_schema_is_sent_as_json_schema(self) -> None:
+        self._mock_response({"choices": [{"message": {"content": "{}"}}]})
+        schema = {"type": "object"}
+        self.client.complete(
+            agent_id="discovery", model="m", system="", user="x", json_schema=schema
+        )
+        sent = self.mock_httpx.post.call_args[1]["json"]["response_format"]
+        self.assertEqual(sent["type"], "json_schema")
+        self.assertEqual(sent["json_schema"]["schema"], schema)
+        self.assertEqual(self.mock_httpx.post.call_count, 1)
+
+    def test_falls_back_to_json_mode_when_schema_is_rejected(self) -> None:
+        rejected = MagicMock(status_code=400)
+        accepted = MagicMock(status_code=200)
+        accepted.json.return_value = {"choices": [{"message": {"content": "{}"}}]}
+        self.mock_httpx.post.side_effect = [rejected, accepted]
+        result = self.client.complete(
+            agent_id="discovery", model="m", system="", user="x", json_schema={"type": "object"}
+        )
+        self.assertEqual(result.text, "{}")
+        calls = self.mock_httpx.post.call_args_list
+        self.assertEqual(calls[0][1]["json"]["response_format"]["type"], "json_schema")
+        self.assertEqual(calls[1][1]["json"]["response_format"], {"type": "json_object"})
+
+    def test_no_response_format_without_schema(self) -> None:
+        self._mock_response({"choices": [{"message": {"content": "ok"}}]})
+        self.client.complete(agent_id="visa", model="m", system="", user="x")
+        self.assertNotIn("response_format", self.mock_httpx.post.call_args[1]["json"])
+
 
 class TestBuildLLMClient(unittest.TestCase):
     """Tests for the build_llm_client factory function."""
