@@ -42,9 +42,10 @@ from voyager_ai.schemas import ITINERARY_SCHEMA, RESEARCH_SCHEMA
 from voyager_ai.search import (
     SearchClient,
     build_search_client,
-    format_search_context,
+    format_sources,
     queries_for_agent,
     rank_results,
+    shown_sources,
 )
 from voyager_ai.structured import Itinerary, ResearchReport
 
@@ -153,18 +154,29 @@ class TravelPlanner:
         if results and fetching and not pages:
             warnings.append(NO_PAGES_WARNING)
 
-        prompt = research_prompt(
-            agent_id, preferences, destination, format_search_context(results, pages)
-        )
-        allowed_urls = [result.url for result in results]
-        report, raw_text = self._complete_structured(
-            agent_id,
-            prompt,
-            RESEARCH_SCHEMA,
-            lambda payload: ResearchReport.from_payload(payload, allowed_urls),
-            on_chunk,
-            RESEARCH_BREVITY_NOTE,
-        )
+        shown = shown_sources(results, pages)
+        prompt = research_prompt(agent_id, preferences, destination, format_sources(shown))
+        # A finding may cite only a source the model was shown.
+        allowed_urls = [source.url for source in shown]
+        try:
+            report, raw_text = self._complete_structured(
+                agent_id,
+                prompt,
+                RESEARCH_SCHEMA,
+                lambda payload: ResearchReport.from_payload(payload, allowed_urls),
+                on_chunk,
+                RESEARCH_BREVITY_NOTE,
+            )
+        except Exception as exc:
+            # The search evidence is still worth showing next to the error.
+            return AgentResult(
+                agent_id=agent_id,
+                model=self.settings.model_for(agent_id),
+                status="error",
+                error=str(exc) or type(exc).__name__,
+                warnings=warnings,
+                sources=results,
+            )
         return AgentResult(
             agent_id=agent_id,
             model=self.settings.model_for(agent_id),

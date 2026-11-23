@@ -183,23 +183,54 @@ _CITE_RULE = (
 )
 
 
-def format_search_context(
-    results: list[SearchResult], pages: Sequence[Page] = (), limit: int = 12
-) -> str:
-    if not results and not pages:
+# Most sources shown to one research agent.
+SOURCE_LIMIT = 12
+
+
+@dataclass(frozen=True)
+class ShownSource:
+    """One source as the research prompt shows it."""
+
+    url: str
+    text: str
+
+
+def shown_sources(
+    results: list[SearchResult], pages: Sequence[Page] = (), limit: int = SOURCE_LIMIT
+) -> list[ShownSource]:
+    """The sources a research prompt shows: read pages first, then snippets, up to `limit`.
+
+    These are also the only URLs a finding may cite, so the two cannot drift apart.
+    """
+
+    page_urls = {page.url for page in pages}
+    sources = [
+        ShownSource(page.url, f"{page.title}\nURL: {page.url}\n{page.text}") for page in pages
+    ]
+    sources += [
+        ShownSource(result.url, f"{result.title}\nURL: {result.url}\nSnippet: {result.snippet}")
+        for result in results
+        if result.url not in page_urls
+    ]
+    return sources[:limit]
+
+
+def format_sources(sources: Sequence[ShownSource]) -> str:
+    """The research prompt's source block for sources from `shown_sources`."""
+
+    if not sources:
         return (
             "No live web snippets were available. Be explicit when a claim is based on general "
             "model knowledge rather than a source."
         )
     blocks = ["Use these sources as context."]
-    page_urls = {page.url for page in pages}
-    sources = [f"{page.title}\nURL: {page.url}\n{page.text}" for page in pages]
-    sources += [
-        f"{result.title}\nURL: {result.url}\nSnippet: {result.snippet}"
-        for result in results
-        if result.url not in page_urls
-    ]
-    for index, source in enumerate(sources[:limit], start=1):
-        blocks.append(f"Source [{index}]: {source}")
+    for index, source in enumerate(sources, start=1):
+        blocks.append(f"Source [{index}]: {source.text}")
     blocks.append(_CITE_RULE)
     return "\n\n".join(blocks)
+
+
+def format_search_context(
+    results: list[SearchResult], pages: Sequence[Page] = (), limit: int = SOURCE_LIMIT
+) -> str:
+    return format_sources(shown_sources(results, pages, limit))

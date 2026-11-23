@@ -5,12 +5,12 @@ import pytest
 from voyager_ai.config import Settings
 from voyager_ai.demo import demo_itinerary_payload
 from voyager_ai.fetch import NoopFetcher
-from voyager_ai.llm import DemoLLMClient
+from voyager_ai.llm import DemoLLMClient, LLMError
 from voyager_ai.models import Destination, SearchResult, TravelPreferences, ValidationError
 from voyager_ai.planner import TravelPlanner
 from voyager_ai.prompts import BREVITY_NOTE
 from voyager_ai.render import render_markdown
-from voyager_ai.search import NoopSearchClient, SearchClient
+from voyager_ai.search import NoopSearchClient, SearchClient, SearchError
 
 DEST = Destination("Tokyo", "Japan", "Chosen by test.")
 PREFS = TravelPreferences("Mumbai", nationality="Indian")
@@ -228,3 +228,57 @@ def test_repair_that_is_also_cut_off_says_so():
     llm = CutOffLLM([('{"days": [', True), ('{"days": [', True)])
     with pytest.raises(ValidationError, match="the reply was cut off at the token limit"):
         _build_itinerary(llm)
+
+
+class ManyResultSearch(SearchClient):
+    """Thirteen distinct results for the visa agent, one more than the prompt shows."""
+
+    def search(self, query, max_results=4):
+        if "visa requirements" not in query:
+            return []
+        return [SearchResult(f"R{i}", f"https://r.example/{i}", "s") for i in range(1, 14)]
+
+
+def _visa_citing(*urls):
+    findings = [
+        {"topic": "T", "claim": f"Claim {url}", "basis": "sourced", "source_url": url}
+        for url in urls
+    ]
+    return json.dumps({"summary": "S.", "findings": findings})
+
+
+def test_only_sources_shown_in_the_prompt_can_be_cited():
+    llm = ScriptedLLM({"visa": [_visa_citing("https://r.example/12", "https://r.example/13")]})
+    trip = _demo_planner(llm=llm, search=ManyResultSearch()).plan_trip(PREFS, DEST)
+    assert "https://r.example/13" not in llm.last_user["visa"]
+    bases = [f.basis for f in trip.results["visa"].report.findings]
+    assert bases == ["sourced", "model"]
+
+
+class FailingVisaLLM(DemoLLMClient):
+    def complete(self, *, agent_id, **kwargs):
+        if agent_id == "visa":
+            raise LLMError("visa model is down")
+        return super().complete(agent_id=agent_id, **kwargs)
+
+
+class HalfBrokenSearch(VisaOnlySearch):
+    def search(self, query, max_results=4):
+        if "evisa" in query:
+            raise SearchError("rate limited")
+        return super().search(query, max_results)
+
+
+def test_failed_agent_keeps_its_search_warnings_and_sources():
+    planner = _demo_planner(llm=FailingVisaLLM(), search=HalfBrokenSearch())
+    visa = planner.plan_trip(PREFS, DEST).results["visa"]
+    assert visa.status == "error" and "visa model is down" in visa.error
+    assert [s.url for s in visa.sources] == ["https://www.gov.uk/x"]
+    assert any("rate limited" in w for w in visa.warnings)
+    assert "> Warning: Search failed" in render_markdown(_trip_with(visa))
+
+
+def _trip_with(result):
+    from voyager_ai.models import TripPlan
+
+    return TripPlan(PREFS, DEST, {"visa": result})

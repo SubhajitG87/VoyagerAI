@@ -53,8 +53,14 @@ def test_invented_url_is_downgraded():
     assert f.basis == "model" and f.source_url is None
 
 
-def test_model_claim_with_known_url_counts_as_sourced():
-    assert _report(basis="model", source_url=ALLOWED[0]).findings[0].basis == "sourced"
+def test_model_claim_with_known_url_stays_model():
+    f = _report(basis="model", source_url=ALLOWED[0]).findings[0]
+    assert f.basis == "model" and f.source_url is None
+
+
+def test_unknown_basis_with_known_url_is_model():
+    f = _report(basis="maybe", source_url=ALLOWED[0]).findings[0]
+    assert f.basis == "model" and f.source_url is None
 
 
 def test_finding_without_claim_is_dropped():

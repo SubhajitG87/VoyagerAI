@@ -21,6 +21,7 @@ from voyager_ai.search import (
     is_official_domain,
     queries_for_agent,
     rank_results,
+    shown_sources,
 )
 
 
@@ -332,3 +333,12 @@ def test_context_limit_counts_pages_and_snippets() -> None:
     results = [r_url(f"https://x/{i}") for i in range(10)]
     pages = [Page(f"https://p/{i}", "P", "body") for i in range(2)]
     assert format_search_context(results, pages=pages, limit=5).count("Source [") == 5
+
+
+def test_shown_sources_are_pages_then_snippets_up_to_the_limit() -> None:
+    results = [r_url(f"https://x/{i}") for i in range(4)]
+    pages = [Page("https://x/2", "P", "body")]
+    shown = shown_sources(results, pages=pages, limit=3)
+    assert [s.url for s in shown] == ["https://x/2", "https://x/0", "https://x/1"]
+    ctx = format_search_context(results, pages=pages, limit=3)
+    assert all(s.url in ctx for s in shown) and "https://x/3" not in ctx

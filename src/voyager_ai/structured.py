@@ -1,7 +1,8 @@
 """Validated structured types for research reports and itineraries.
 
-A finding is "sourced" only when its URL is one of this run's search results. Anything
-else is labelled as model knowledge, so the report never presents an invented link as evidence.
+A finding is "sourced" only when the model says so and its URL is one of the sources shown to
+it in this run. Anything else is labelled as model knowledge, so the report never presents an
+invented link, or a claim the model itself did not attribute, as evidence.
 """
 
 from __future__ import annotations
@@ -67,12 +68,13 @@ class ResearchReport:
                 continue
             url = clean_text(item.get("source_url"))
             matched = allowed.get(normalize_url(url)) if url else None
+            sourced = matched is not None and item.get("basis") == "sourced"
             findings.append(
                 Finding(
                     topic=clean_text(item.get("topic")),
                     claim=claim,
-                    basis="sourced" if matched else "model",
-                    source_url=matched,
+                    basis="sourced" if sourced else "model",
+                    source_url=matched if sourced else None,
                 )
             )
         return cls(summary=summary, findings=findings)
