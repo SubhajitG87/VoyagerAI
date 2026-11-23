@@ -26,3 +26,9 @@ def test_dotenv_file_is_not_loaded(monkeypatch):
     monkeypatch.setattr("dotenv.load_dotenv", lambda *args, **kwargs: calls.append(1))
     Settings.from_env()
     assert calls == []
+
+
+def test_guards_still_apply_to_unmarked_tests(request):
+    assert request.node.get_closest_marker("live") is None
+    with socket.socket() as sock, pytest.raises(BaseException, match=BLOCKED):
+        sock.connect(("127.0.0.1", 9))

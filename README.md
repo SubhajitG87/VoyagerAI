@@ -22,8 +22,11 @@ This Python version keeps the same product idea but makes it a GitHub-ready proj
 - A CLI for repeatable runs and automation.
 - A provider abstraction that replaces Anthropic calls with local/open-model backends.
 - Per-agent model selection.
-- Optional DuckDuckGo search snippets outside the LLM.
-- Validation, JSON parsing, itinerary parsing, tests, CI, and packaging.
+- DuckDuckGo search outside the LLM: the top results are fetched and read, and findings carry
+  the URL they came from (see "How sources work").
+- Schema-constrained structured output with retries, a structured itinerary with a budget, and
+  research agents that run in parallel with progress events.
+- Validation, JSON extraction, tests, CI, and packaging.
 
 ## Quick Start
 
@@ -34,7 +37,7 @@ pip install -e .
 cp .env.example .env
 ```
 
-Run the app in deterministic demo mode first:
+Run the app in deterministic, offline demo mode first (no model, search or network):
 
 ```bash
 VOYAGER_LLM_PROVIDER=demo streamlit run src/voyager_ai/app.py
@@ -67,6 +70,22 @@ JSON. See the official Ollama docs for the chat API and structured output format
 
 - [Ollama chat API](https://docs.ollama.com/api/chat)
 - [Ollama structured outputs](https://docs.ollama.com/capabilities/structured-outputs)
+
+## Providers
+
+Set `VOYAGER_LLM_PROVIDER` (or pass `--provider` on the CLI) to one of:
+
+| Provider | `VOYAGER_LLM_PROVIDER` | Env vars it needs | Notes |
+| --- | --- | --- | --- |
+| Ollama (default) | `ollama` | `OLLAMA_BASE_URL` (default `http://localhost:11434`), `VOYAGER_OLLAMA_NUM_CTX`, `VOYAGER_OLLAMA_THINK` | Local models; uses the model presets below. |
+| OpenAI-compatible | `openai-compatible` | `OPENAI_COMPATIBLE_BASE_URL` (default `http://localhost:1234/v1`), `OPENAI_COMPATIBLE_API_KEY` (optional) | LM Studio, vLLM, llama.cpp server; uses the model presets below. |
+| NVIDIA NIM | `nim` | `NVIDIA_API_KEY`, `NVIDIA_BASE_URL` (default `https://integrate.api.nvidia.com/v1`) | Hosted open models. Picks its own model per agent and ignores `VOYAGER_MODEL_PRESET`; per-agent overrides still apply. |
+| Demo | `demo` | none | Deterministic offline responses. |
+
+The NIM model ids in `NIM_MODELS` in `src/voyager_ai/config.py` are unprobed placeholders: they
+have not been checked against the live NIM catalogue. Run `scripts/probe_schema.py` with
+`NVIDIA_API_KEY` set to see which models accept structured output, and update `NIM_MODELS` (or
+use the per-agent overrides) before relying on it.
 
 ## Model Strategy
 
@@ -107,6 +126,20 @@ VOYAGER_ENABLE_SEARCH=true
 VOYAGER_OLLAMA_NUM_CTX=16384
 ```
 
+Other variables (defaults in brackets; values below the minimum are raised to it):
+
+| Variable | Meaning |
+| --- | --- |
+| `VOYAGER_LLM_RETRIES` [3, min 1] | Attempts per model call when the reply is not valid structured output. |
+| `VOYAGER_OLLAMA_THINK` [`false`] | Ollama "think" flag: `false`, `true`, or `default` to leave it to the model. |
+| `VOYAGER_SCHEMA_MODE` [provider default] | Structured-output mode: `json_schema`, `nvext_guided`, `vllm_guided` or `json_object`. |
+| `VOYAGER_SEARCH_RETRIES` [2, min 1] | Attempts per web search. |
+| `VOYAGER_SEARCH_MAX_RESULTS` [4, min 1] | Search results per agent. |
+| `VOYAGER_FETCH_PAGES` [3, 0 turns it off] | Top search results each research agent reads in full. |
+| `VOYAGER_PAGE_CHARS` [4000, min 500] | Characters of readable text kept per fetched page. |
+| `VOYAGER_LLM_CONCURRENCY` [0 = automatic] | Model calls allowed at once: 1 on Ollama, 4 elsewhere. |
+| `VOYAGER_REQUEST_TIMEOUT_S` [180] | Request timeout in seconds. |
+
 `VOYAGER_OLLAMA_NUM_CTX` sets Ollama's context window in tokens (minimum 4096). The itinerary
 agent reads all four research reports. With a smaller window the reports are trimmed to fit, so
 lowering it saves memory at the cost of detail in the final itinerary.
@@ -140,6 +173,15 @@ OPENAI_COMPATIBLE_API_KEY=
 
 This works with local servers that expose `/v1/chat/completions`, such as LM Studio, vLLM, or
 llama.cpp server.
+
+## How sources work
+
+Each research agent searches the web, then reads the top pages (`VOYAGER_FETCH_PAGES`). Every
+finding it reports carries the URL it came from, and the app only accepts a URL that was in the
+pages it actually fetched. Anything else is labelled `unverified: model knowledge` in the app and
+in the Markdown output. With search disabled, or when a search or fetch fails, findings fall back
+to that label rather than inventing a source. A source link means the claim was taken from that
+page, not that the page or the model's reading of it is correct.
 
 ## CLI Usage
 
@@ -181,7 +223,18 @@ make test
 make lint
 ```
 
-The test suite uses deterministic demo responses and does not call real LLM or search services.
+The test suite uses deterministic demo responses and does not call real LLM or search services;
+it blocks network access outright.
+
+One opt-in smoke test runs a real plan (London to Lisbon, 3 nights, food). It is skipped unless
+`VOYAGER_LIVE_PROVIDER` is set (`nim`, `ollama` or `openai-compatible`), so CI never runs it:
+
+```bash
+VOYAGER_LIVE_PROVIDER=nim NVIDIA_API_KEY=... python -m pytest -m live
+```
+
+It reads your real environment and `.env`, calls a real model and the network, and asserts there
+were no agent errors, a four-day itinerary, and at least one sourced finding.
 
 ## Safety Notes
 
@@ -189,8 +242,8 @@ VoyagerAI is a research assistant, not a booking engine or immigration authority
 
 - Verify visa, passport, health, and entry rules on official government sites before booking.
 - Treat flight, hotel, and activity prices as estimates unless verified on the booking provider.
-- Live search snippets can fail, rate-limit, or return stale pages; the app surfaces uncertainty in
-  prompts instead of hiding it.
+- Live search and page fetching can fail, rate-limit, or return stale pages; findings without a
+  fetched source are labelled as unverified instead of being presented as fact.
 - Local models can hallucinate. For high-stakes decisions, add a source-verification step before
   accepting the itinerary.
 
@@ -201,14 +254,23 @@ src/voyager_ai/
   app.py          Streamlit web UI
   cli.py          Command line interface
   config.py       Environment and model preset configuration
-  llm.py          Ollama, OpenAI-compatible, and demo LLM clients
-  planner.py      Multi-agent orchestration
-  prompts.py      Specialist prompts and JSON schema
-  search.py       Optional DuckDuckGo snippet provider
+  llm.py          Ollama, OpenAI-compatible, NIM, and demo LLM clients
+  planner.py      Multi-agent orchestration (parallel research, then itinerary)
+  prompts.py      Specialist prompts
+  schemas.py      JSON schemas for structured output
+  structured.py   Typed research reports and itinerary, parsed and checked
+  retry.py        Retry with backoff for model and search calls
+  search.py       DuckDuckGo search provider
+  fetch.py        Page fetching and readable-text extraction
+  events.py       Progress events emitted while a plan runs
+  render.py       Markdown rendering with source labels
+  links.py        Booking deep links
+  demo.py         Offline demo responses
   models.py       Domain models and validation
-  parser.py       JSON and itinerary markdown parsing
+  parser.py       Extracts JSON from model output and strips reasoning
   constants.py    Cities, nationalities, travel styles, agent metadata
-tests/            Unit tests
+scripts/          probe_schema.py: checks which NIM models accept structured output
+tests/            Unit tests (network blocked) and the opt-in live smoke test
 docs/             Audit notes and improvement suggestions
 examples/         Example request payloads
 ```
@@ -231,6 +293,8 @@ Contributions are welcome! Here's how to get started:
    ```bash
    python -m pytest --cov=src --cov-report=term-missing
    ```
+
+   The live smoke test is skipped by default (see Development).
 
 4. **Lint & type-check** your code:
 
