@@ -22,7 +22,7 @@ This Python version keeps the same product idea but makes it a GitHub-ready proj
 - A CLI for repeatable runs and automation.
 - A provider abstraction that replaces Anthropic calls with local/open-model backends.
 - Per-agent model selection.
-- DuckDuckGo search outside the LLM: the top results are fetched and read, and findings carry
+- DuckDuckGo search outside the LLM: the top results are read, and findings carry
   the URL they came from (see "How sources work").
 - Schema-constrained structured output with retries, a structured itinerary with a budget, and
   research agents that run in parallel with progress events.
@@ -238,9 +238,9 @@ VOYAGER_LIVE_PROVIDER=nim NVIDIA_API_KEY=... python -m pytest -m live
 ```
 
 It reads your real environment and `.env` and calls a real model and the network. It forces
-search and page fetching on (overriding `VOYAGER_ENABLE_SEARCH` and `VOYAGER_FETCH_PAGES`), and
-asserts there were no agent errors, a four-day itinerary, and at least one sourced finding. With
-`nim` it skips if `NVIDIA_API_KEY` is empty.
+search on (`VOYAGER_ENABLE_SEARCH`) and page fetching on (at least one page, raising
+`VOYAGER_FETCH_PAGES` if it is lower), and asserts there were no agent errors, a four-day
+itinerary, and at least one sourced finding. With `nim` it skips if `NVIDIA_API_KEY` is empty.
 
 ## Safety Notes
 
@@ -248,8 +248,9 @@ VoyagerAI is a research assistant, not a booking engine or immigration authority
 
 - Verify visa, passport, health, and entry rules on official government sites before booking.
 - Treat flight, hotel, and activity prices as estimates unless verified on the booking provider.
-- Live search and page fetching can fail, rate-limit, or return stale pages; findings without a
-  fetched source are labelled as unverified instead of being presented as fact.
+- Live search and page fetching can fail, rate-limit, or return stale pages. Findings that do not
+  cite a URL from the search results are labelled unverified; a cited URL only means the model
+  pointed at a search result, not that the page was read or supports the claim.
 - Local models can hallucinate. For high-stakes decisions, add a source-verification step before
   accepting the itinerary.
 

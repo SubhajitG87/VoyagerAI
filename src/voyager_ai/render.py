@@ -1,7 +1,8 @@
 """Render a structured trip plan as Markdown.
 
-Claims are never shown as fact without a source: a finding without a fetched source is
-labelled as model knowledge, and visa rules always carry a reminder to check the official site.
+Claims are never shown as fact without a source: a finding that does not cite one of the
+search results is labelled as model knowledge, and visa rules always carry a reminder to
+check the official site.
 """
 
 from __future__ import annotations
