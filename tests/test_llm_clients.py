@@ -10,6 +10,7 @@ from httpx import HTTPStatusError, TimeoutException
 
 from voyager_ai.config import Settings
 from voyager_ai.llm import (
+    DemoLLMClient,
     LLMError,
     OllamaClient,
     OpenAICompatibleClient,
@@ -329,3 +330,124 @@ class TestBuildLLMClient(unittest.TestCase):
         settings = Settings(provider="unknown-provider")
         with self.assertRaises(LLMError):
             build_llm_client(settings)
+
+
+def _stream_ctx(lines, status: int = 200, error: Exception | None = None) -> MagicMock:
+    """A context manager standing in for ``httpx.stream(...)``."""
+
+    response = MagicMock()
+    response.status_code = status
+    response.headers = {}
+    response.raise_for_status.return_value = None
+
+    def iter_lines():
+        yield from lines
+        if error is not None:
+            raise error
+
+    response.iter_lines.side_effect = iter_lines
+    ctx = MagicMock()
+    ctx.__enter__.return_value = response
+    ctx.__exit__.return_value = False
+    return ctx
+
+
+def _no_sleep(_seconds: float) -> None:
+    return None
+
+
+class TestStreaming(unittest.TestCase):
+    def _patch_stream(self, *contexts: MagicMock) -> MagicMock:
+        patcher = patch("voyager_ai.llm.httpx.stream", side_effect=list(contexts))
+        mock = patcher.start()
+        self.addCleanup(patcher.stop)
+        return mock
+
+    def test_ollama_streams_chunks(self) -> None:
+        stream = self._patch_stream(
+            _stream_ctx(
+                [
+                    '{"message":{"content":"Hel"},"done":false}',
+                    '{"message":{"content":"lo"},"done":true}',
+                ]
+            )
+        )
+        chunks: list[str] = []
+        result = OllamaClient(sleep=_no_sleep).complete(
+            agent_id="a", model="m", system="s", user="u", on_chunk=chunks.append
+        )
+        self.assertEqual(chunks, ["Hel", "lo"])
+        self.assertEqual(result.text, "Hello")
+        self.assertTrue(stream.call_args[1]["json"]["stream"])
+
+    def test_openai_streams_sse_chunks(self) -> None:
+        self._patch_stream(
+            _stream_ctx(
+                [
+                    ": keepalive",
+                    'data: {"choices":[{"delta":{"content":"Hel"}}]}',
+                    "",
+                    'data: {"choices":[{"delta":{"content":"lo"}}]}',
+                    "data: [DONE]",
+                ]
+            )
+        )
+        chunks: list[str] = []
+        result = OpenAICompatibleClient("http://x/v1", sleep=_no_sleep).complete(
+            agent_id="a", model="m", system="s", user="u", on_chunk=chunks.append
+        )
+        self.assertEqual(chunks, ["Hel", "lo"])
+        self.assertEqual(result.text, "Hello")
+
+    def test_stream_interrupted_after_first_chunk_is_not_retried(self) -> None:
+        stream = self._patch_stream(
+            _stream_ctx(
+                ['data: {"choices":[{"delta":{"content":"Hel"}}]}'],
+                error=httpx.ReadError("reset"),
+            )
+        )
+        with self.assertRaises(LLMError) as ctx:
+            OpenAICompatibleClient("http://x/v1", sleep=_no_sleep).complete(
+                agent_id="a", model="m", system="s", user="u", on_chunk=lambda _c: None
+            )
+        self.assertIn("interrupted after 3 characters", str(ctx.exception))
+        self.assertEqual(stream.call_count, 1)
+
+    def test_stream_503_before_any_chunk_is_retried(self) -> None:
+        stream = self._patch_stream(
+            _stream_ctx([], status=503),
+            _stream_ctx(['{"message":{"content":"ok"},"done":true}']),
+        )
+        result = OllamaClient(sleep=_no_sleep).complete(
+            agent_id="a", model="m", system="s", user="u", on_chunk=lambda _c: None
+        )
+        self.assertEqual(result.text, "ok")
+        self.assertEqual(stream.call_count, 2)
+
+    def test_openai_stream_schema_rejected_falls_back_to_json_object(self) -> None:
+        stream = self._patch_stream(
+            _stream_ctx([], status=400),
+            _stream_ctx(['data: {"choices":[{"delta":{"content":"{}"}}]}', "data: [DONE]"]),
+        )
+        result = OpenAICompatibleClient("http://x/v1", sleep=_no_sleep).complete(
+            agent_id="a",
+            model="m",
+            system="s",
+            user="u",
+            json_schema={"type": "object"},
+            on_chunk=lambda _c: None,
+        )
+        self.assertEqual(result.text, "{}")
+        self.assertEqual(stream.call_count, 2)
+        first, second = (c[1]["json"] for c in stream.call_args_list)
+        self.assertEqual(first["response_format"]["type"], "json_schema")
+        self.assertEqual(second["response_format"], {"type": "json_object"})
+        self.assertTrue(second["stream"])
+
+    def test_demo_client_streams_three_pieces(self) -> None:
+        chunks: list[str] = []
+        result = DemoLLMClient().complete(
+            agent_id="flight", model="demo", system="", user="u", on_chunk=chunks.append
+        )
+        self.assertEqual(len(chunks), 3)
+        self.assertEqual("".join(chunks), result.text)

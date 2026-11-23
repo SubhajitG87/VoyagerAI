@@ -40,6 +40,75 @@ class LLMError(VoyagerError):
     """Raised when an LLM provider cannot complete a request."""
 
 
+# Receives each content piece as a streaming client produces it.
+ChunkSink = Callable[[str], None]
+
+
+class _SchemaRejected(Exception):
+    """The server refused a json_schema response format before streaming anything."""
+
+
+# Streaming parsers return (piece, done) for one line; piece is None when the line has no text.
+_LineParser = Callable[[str], "tuple[str | None, bool]"]
+
+
+def _consume_stream(
+    provider: str,
+    open_stream: Callable[[], Any],
+    parse_line: _LineParser,
+    on_chunk: ChunkSink,
+    rejected_statuses: set[int] | None = None,
+) -> str:
+    """Run one streaming attempt and return the full text.
+
+    A connection failure before the first chunk is a RetryableError. Any httpx failure after
+    the first chunk raises LLMError, because retrying would replay text already shown.
+    A status in ``rejected_statuses`` raises _SchemaRejected so the caller can change the request.
+    """
+
+    parts: list[str] = []
+    emitted = 0
+    try:
+        with open_stream() as response:
+            if rejected_statuses and response.status_code in rejected_statuses:
+                raise _SchemaRejected
+            _check_response(response)
+            for line in response.iter_lines():
+                piece, done = parse_line(line)
+                if piece:
+                    parts.append(piece)
+                    emitted += len(piece)
+                    on_chunk(piece)
+                if done:
+                    break
+    except httpx.HTTPError as exc:
+        if emitted:
+            raise LLMError(
+                f"{provider} stream interrupted after {emitted} characters: {exc}"
+            ) from exc
+        if isinstance(exc, (httpx.ConnectError, httpx.RemoteProtocolError)):
+            raise RetryableError(str(exc)) from exc
+        raise
+    return "".join(parts)
+
+
+def _parse_ollama_line(line: str) -> tuple[str | None, bool]:
+    if not line.strip():
+        return None, False
+    data = json.loads(line)
+    return (data.get("message") or {}).get("content") or None, bool(data.get("done"))
+
+
+def _parse_sse_line(line: str) -> tuple[str | None, bool]:
+    if not line.startswith("data: "):
+        return None, False
+    body = line[len("data: ") :].strip()
+    if body == "[DONE]":
+        return None, True
+    choices = json.loads(body).get("choices") or []
+    return ((choices[0].get("delta") or {}).get("content") if choices else None) or None, False
+
+
 @dataclass
 class LLMResponse:
     text: str
@@ -58,6 +127,7 @@ class BaseLLMClient:
         temperature: float = 0.25,
         max_tokens: int = 2800,
         json_schema: dict[str, Any] | None = None,
+        on_chunk: ChunkSink | None = None,
     ) -> LLMResponse:
         raise NotImplementedError
 
@@ -91,6 +161,7 @@ class OllamaClient(BaseLLMClient):
         temperature: float = 0.25,
         max_tokens: int = 2800,
         json_schema: dict[str, Any] | None = None,
+        on_chunk: ChunkSink | None = None,
     ) -> LLMResponse:
         payload: dict[str, Any] = {
             "model": model,
@@ -98,7 +169,7 @@ class OllamaClient(BaseLLMClient):
                 {"role": "system", "content": system},
                 {"role": "user", "content": user},
             ],
-            "stream": False,
+            "stream": on_chunk is not None,
             "options": {
                 "temperature": temperature,
                 "num_predict": max_tokens,
@@ -110,19 +181,33 @@ class OllamaClient(BaseLLMClient):
         if json_schema is not None:
             payload["format"] = json_schema
 
+        url = f"{self.base_url}/api/chat"
+
         def attempt() -> httpx.Response:
             try:
-                response = httpx.post(
-                    f"{self.base_url}/api/chat",
-                    json=payload,
-                    timeout=self.timeout_s,
-                )
+                response = httpx.post(url, json=payload, timeout=self.timeout_s)
             except (httpx.ConnectError, httpx.RemoteProtocolError) as exc:
                 raise RetryableError(str(exc)) from exc
             return _check_response(response)
 
+        def attempt_stream() -> str:
+            return _consume_stream(
+                "Ollama",
+                lambda: httpx.stream("POST", url, json=payload, timeout=self.timeout_s),
+                _parse_ollama_line,
+                on_chunk,  # type: ignore[arg-type]
+            )
+
         try:
-            response = retry_call(attempt, attempts=self.retries, sleep=self.sleep)
+            if on_chunk is not None:
+                text = retry_call(attempt_stream, attempts=self.retries, sleep=self.sleep)
+                data: dict[str, Any] = {"streamed": True}
+            else:
+                response = retry_call(attempt, attempts=self.retries, sleep=self.sleep)
+                data = response.json()
+                text = (data.get("message") or {}).get("content") or data.get("response") or ""
+        except LLMError:
+            raise
         except Exception as exc:
             hint = (
                 f"Could not reach Ollama at {self.base_url}. Start it with `ollama serve` and "
@@ -130,8 +215,6 @@ class OllamaClient(BaseLLMClient):
             )
             raise LLMError(f"{hint} Provider error: {exc}") from exc
 
-        data = response.json()
-        text = (data.get("message") or {}).get("content") or data.get("response") or ""
         text = strip_reasoning(text)
         if not text.strip():
             raise LLMError(f"Ollama returned an empty response for {agent_id} using {model}.")
@@ -165,6 +248,7 @@ class OpenAICompatibleClient(BaseLLMClient):
         temperature: float = 0.25,
         max_tokens: int = 2800,
         json_schema: dict[str, Any] | None = None,
+        on_chunk: ChunkSink | None = None,
     ) -> LLMResponse:
         headers = {"Content-Type": "application/json"}
         if self.api_key:
@@ -179,6 +263,8 @@ class OpenAICompatibleClient(BaseLLMClient):
             "temperature": temperature,
             "max_tokens": max_tokens,
         }
+        if on_chunk is not None:
+            payload["stream"] = True
         if json_schema is not None:
             # Ask for the schema itself, not just "some JSON". LM Studio, vLLM and
             # llama.cpp server accept this form.
@@ -186,6 +272,8 @@ class OpenAICompatibleClient(BaseLLMClient):
                 "type": "json_schema",
                 "json_schema": {"name": f"{agent_id}_response", "schema": json_schema},
             }
+        # Older servers only know JSON mode. The parser still validates the result.
+        fallback = {**payload, "response_format": {"type": "json_object"}}
 
         url = f"{self.base_url}/chat/completions"
 
@@ -193,8 +281,6 @@ class OpenAICompatibleClient(BaseLLMClient):
             try:
                 response = httpx.post(url, json=payload, headers=headers, timeout=self.timeout_s)
                 if json_schema is not None and response.status_code in SCHEMA_REJECTED_STATUSES:
-                    # Older servers only know JSON mode. The parser still validates the result.
-                    fallback = {**payload, "response_format": {"type": "json_object"}}
                     response = httpx.post(
                         url, json=fallback, headers=headers, timeout=self.timeout_s
                     )
@@ -202,16 +288,39 @@ class OpenAICompatibleClient(BaseLLMClient):
                 raise RetryableError(str(exc)) from exc
             return _check_response(response)
 
+        def stream_once(body: dict[str, Any], schema_requested: bool) -> str:
+            return _consume_stream(
+                "OpenAI-compatible provider",
+                lambda: httpx.stream(
+                    "POST", url, json=body, headers=headers, timeout=self.timeout_s
+                ),
+                _parse_sse_line,
+                on_chunk,  # type: ignore[arg-type]
+                SCHEMA_REJECTED_STATUSES if schema_requested else None,
+            )
+
+        def attempt_stream() -> str:
+            try:
+                return stream_once(payload, json_schema is not None)
+            except _SchemaRejected:
+                return stream_once(fallback, False)
+
         try:
-            response = retry_call(attempt, attempts=self.retries, sleep=self.sleep)
+            if on_chunk is not None:
+                text = retry_call(attempt_stream, attempts=self.retries, sleep=self.sleep)
+                data: dict[str, Any] = {"streamed": True}
+            else:
+                response = retry_call(attempt, attempts=self.retries, sleep=self.sleep)
+                data = response.json()
+                choices = data.get("choices") or []
+                text = ((choices[0].get("message") or {}).get("content") if choices else "") or ""
+        except LLMError:
+            raise
         except Exception as exc:
             raise LLMError(
                 f"OpenAI-compatible provider failed at {self.base_url} with model {model}: {exc}"
             ) from exc
 
-        data = response.json()
-        choices = data.get("choices") or []
-        text = ((choices[0].get("message") or {}).get("content") if choices else "") or ""
         text = strip_reasoning(text)
         if not text.strip():
             raise LLMError(
@@ -234,6 +343,7 @@ class DemoLLMClient(BaseLLMClient):
         temperature: float = 0.25,
         max_tokens: int = 2800,
         json_schema: dict[str, Any] | None = None,
+        on_chunk: ChunkSink | None = None,
     ) -> LLMResponse:
         if agent_id == "discovery":
             text = json.dumps({"destinations": _demo_destinations()})
@@ -241,6 +351,10 @@ class DemoLLMClient(BaseLLMClient):
             text = _demo_itinerary(user)
         else:
             text = _demo_agent(agent_id, user)
+        if on_chunk is not None:
+            size = max(1, -(-len(text) // 3))
+            for start in range(0, len(text), size):
+                on_chunk(text[start : start + size])
         return LLMResponse(text=text, model="demo", raw={"provider": "demo"})
 
 
