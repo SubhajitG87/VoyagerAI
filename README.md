@@ -176,12 +176,16 @@ llama.cpp server.
 
 ## How sources work
 
-Each research agent searches the web, then reads the top pages (`VOYAGER_FETCH_PAGES`). Every
-finding it reports carries the URL it came from, and the app only accepts a URL that was in the
-pages it actually fetched. Anything else is labelled `unverified: model knowledge` in the app and
-in the Markdown output. With search disabled, or when a search or fetch fails, findings fall back
-to that label rather than inventing a source. A source link means the claim was taken from that
-page, not that the page or the model's reading of it is correct.
+Each research agent searches the web and reads the top few result pages
+(`VOYAGER_FETCH_PAGES`). The model is asked to give each finding the URL it came from. A finding
+is marked as sourced when that URL is one of the search results from this run; otherwise, or when
+it gives no URL, it is labelled `unverified: model knowledge` in the app and in the Markdown
+output. With search disabled, or when no search results come back, every finding gets that label.
+
+The app checks only that the cited URL was in the search results. It does not check that the
+page says what the claim says, and a sourced URL may be one of the results the agent only saw as
+a snippet rather than read in full. Treat a sourced finding as a place to check, and an
+unverified one as the model's own knowledge.
 
 ## CLI Usage
 
@@ -233,8 +237,10 @@ One opt-in smoke test runs a real plan (London to Lisbon, 3 nights, food). It is
 VOYAGER_LIVE_PROVIDER=nim NVIDIA_API_KEY=... python -m pytest -m live
 ```
 
-It reads your real environment and `.env`, calls a real model and the network, and asserts there
-were no agent errors, a four-day itinerary, and at least one sourced finding.
+It reads your real environment and `.env` and calls a real model and the network. It forces
+search and page fetching on (overriding `VOYAGER_ENABLE_SEARCH` and `VOYAGER_FETCH_PAGES`), and
+asserts there were no agent errors, a four-day itinerary, and at least one sourced finding. With
+`nim` it skips if `NVIDIA_API_KEY` is empty.
 
 ## Safety Notes
 

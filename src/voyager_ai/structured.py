@@ -1,7 +1,7 @@
 """Validated structured types for research reports and itineraries.
 
-A finding is "sourced" only when its URL is one the app actually fetched. Anything else is
-labelled as model knowledge, so the report never presents an invented link as evidence.
+A finding is "sourced" only when its URL is one of this run's search results. Anything
+else is labelled as model knowledge, so the report never presents an invented link as evidence.
 """
 
 from __future__ import annotations

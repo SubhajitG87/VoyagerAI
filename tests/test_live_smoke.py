@@ -29,6 +29,12 @@ def test_live_plan():
     # The model map depends on the provider (nim has its own models).
     settings.use_preset(settings.model_preset)
 
+    if provider == "nim" and not settings.nvidia_api_key:
+        pytest.skip("set NVIDIA_API_KEY to run the live test with the nim provider")
+    # The sourced-finding assertion needs search and page reading, whatever the environment says.
+    settings.search_enabled = True
+    settings.fetch_pages = max(1, settings.fetch_pages)
+
     preferences = TravelPreferences(departure_city="London", nights=3, vibe="food")
     destination = Destination(name="Lisbon", country="Portugal")
     trip = TravelPlanner(settings=settings).plan_trip(preferences, destination)
