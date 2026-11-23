@@ -137,6 +137,10 @@ class Settings:
     search_enabled: bool = True
     search_max_results: int = 4
     search_retries: int = 2
+    # Top search results each research agent reads in full. 0 turns page fetching off.
+    fetch_pages: int = 3
+    # Characters of readable text kept per fetched page.
+    page_chars: int = 4000
 
     @classmethod
     def from_env(cls) -> Settings:
@@ -167,6 +171,8 @@ class Settings:
             search_enabled=_env_bool("VOYAGER_ENABLE_SEARCH", True),
             search_max_results=max(1, _env_int("VOYAGER_SEARCH_MAX_RESULTS", 4)),
             search_retries=max(1, _env_int("VOYAGER_SEARCH_RETRIES", 2)),
+            fetch_pages=max(0, _env_int("VOYAGER_FETCH_PAGES", 3)),
+            page_chars=max(500, _env_int("VOYAGER_PAGE_CHARS", 4000)),
         )
 
     def use_preset(self, preset: str) -> None:

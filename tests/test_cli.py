@@ -22,7 +22,10 @@ PLAN = [
 def test_plan_out_creates_parent_directories(tmp_path):
     out = tmp_path / "trip_plans" / "nested" / "tokyo.md"
     assert main([*PLAN, "--out", str(out)]) == 0
-    assert out.read_text(encoding="utf-8").startswith("# VoyagerAI Trip Plan: Tokyo, Japan")
+    markdown = out.read_text(encoding="utf-8")
+    assert markdown.startswith("# VoyagerAI Trip Plan: Tokyo, Japan")
+    assert markdown.count("### Day ") == 8
+    assert "## Budget" in markdown and "## Visa Advisor" in markdown
 
 
 def test_plan_out_unwritable_path_exits_cleanly(tmp_path, capsys):

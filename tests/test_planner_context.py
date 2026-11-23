@@ -1,12 +1,15 @@
+import json
+
 from voyager_ai.config import Settings
 from voyager_ai.llm import DemoLLMClient
 from voyager_ai.models import Destination, TravelPreferences
 from voyager_ai.planner import TravelPlanner
+from voyager_ai.render import render_markdown
 from voyager_ai.search import NoopSearchClient
 
 
 class LongResearchLLM(DemoLLMClient):
-    """Returns 9,000 characters of research per agent and records every prompt."""
+    """Returns a research report with a 9,000-character summary and records every prompt."""
 
     def __init__(self):
         self.users = {}
@@ -17,7 +20,7 @@ class LongResearchLLM(DemoLLMClient):
         self.max_tokens[agent_id] = kwargs.get("max_tokens")
         response = super().complete(agent_id=agent_id, user=user, **kwargs)
         if agent_id in {"flight", "visa", "hotel", "experience"}:
-            response.text = "R" * 9000
+            response.text = json.dumps({"summary": "R" * 9000, "findings": []})
         return response
 
 
@@ -65,5 +68,7 @@ def test_month_long_trip_on_hosted_provider_gets_full_reply_budget():
 
 def test_demo_itinerary_covers_every_day_of_a_long_trip():
     _, trip = _run(Settings(provider="demo"), nights=30)
-    assert "## Day 31 -" in trip.itinerary
-    assert "## Budget Breakdown" in trip.itinerary
+    assert len(trip.itinerary.days) == 31
+    markdown = render_markdown(trip)
+    assert "### Day 31 -" in markdown
+    assert "## Budget" in markdown

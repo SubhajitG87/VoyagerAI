@@ -12,6 +12,7 @@ from typing import Any, Literal, cast
 import httpx
 
 from voyager_ai.config import NIM_SCHEMA_MODE, Settings
+from voyager_ai.demo import demo_itinerary_payload, demo_research_payload
 from voyager_ai.models import VoyagerError
 from voyager_ai.parser import strip_reasoning
 from voyager_ai.retry import RetryableError, parse_retry_after, retry_call
@@ -379,9 +380,9 @@ class DemoLLMClient(BaseLLMClient):
         if agent_id == "discovery":
             text = json.dumps({"destinations": _demo_destinations()})
         elif agent_id == "itinerary":
-            text = _demo_itinerary(user)
+            text = json.dumps(demo_itinerary_payload(_demo_days(user)))
         else:
-            text = _demo_agent(agent_id, user)
+            text = json.dumps(demo_research_payload(agent_id, "your destination"))
         if on_chunk is not None:
             size = max(1, -(-len(text) // 3))
             for start in range(0, len(text), size):
@@ -513,51 +514,8 @@ def _demo_destinations() -> list[dict[str, Any]]:
     ]
 
 
-def _demo_agent(agent_id: str, user: str) -> str:
-    labels = {
-        "flight": "Flight Research",
-        "visa": "Visa And Entry Notes",
-        "hotel": "Hotel Shortlist",
-        "experience": "Experience Ideas",
-    }
-    title = labels.get(agent_id, agent_id.title())
-    return (
-        f"## {title}\n"
-        "- Demo mode is active, so this is a deterministic placeholder rather than live "
-        "research.\n"
-        "- The production path will add search snippets, ask the configured open model to "
-        "synthesize them, and preserve source links in the final markdown.\n"
-        f"- Request summary: {user[:500].replace(chr(10), ' ')}\n"
-    )
+def _demo_days(user: str) -> int:
+    """The trip length the itinerary prompt asks for, as in "(8 days)"."""
 
-
-def _demo_itinerary(user: str) -> str:
     days_match = re.search(r"\((\d+)\s+days\)", user)
-    days = int(days_match.group(1)) if days_match else 8
-    lines = []
-    for day in range(1, days + 1):
-        lines.extend(
-            [
-                f"## Day {day} - Demo Day {day}",
-                "Morning: Start with a neighbourhood walk and a relaxed breakfast.",
-                "Afternoon: Visit one anchor attraction and leave buffer time for transit.",
-                "Evening: Choose a local dinner spot close to your hotel.",
-                "",
-            ]
-        )
-    lines.extend(
-        [
-            "## Practical Tips",
-            (
-                "- Verify visas, passport validity, and health rules on official government "
-                "sites before booking."
-            ),
-            "- Keep one flexible block every two days for weather or energy changes.",
-            "",
-            "## Budget Breakdown",
-            "- Flights: Confirm with live fare search.",
-            "- Hotels: Price against your exact dates.",
-            "- Activities: Pre-book only the scarce or timed-entry experiences.",
-        ]
-    )
-    return "\n".join(lines)
+    return int(days_match.group(1)) if days_match else 8

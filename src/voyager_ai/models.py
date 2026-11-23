@@ -4,10 +4,14 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from voyager_ai.constants import AGENTS, VIBE_DESCRIPTIONS
 from voyager_ai.utils import clean_text, date_range
+
+if TYPE_CHECKING:
+    # structured.py imports ValidationError from here, so these are for type checking only.
+    from voyager_ai.structured import Itinerary, ResearchReport
 
 
 class VoyagerError(Exception):
@@ -123,15 +127,17 @@ class SearchResult:
 
 @dataclass
 class AgentResult:
-    """Output from one specialist agent."""
+    """Output from one specialist agent: a research report or, for the last agent, an itinerary."""
 
     agent_id: str
-    content: str
     model: str
     status: str = "done"
+    report: ResearchReport | None = None
+    itinerary: Itinerary | None = None
     error: str | None = None
-    sources: list[SearchResult] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
+    sources: list[SearchResult] = field(default_factory=list)
+    raw_text: str = ""
 
     @property
     def label(self) -> str:
@@ -147,9 +153,9 @@ class TripPlan:
     results: dict[str, AgentResult]
 
     @property
-    def itinerary(self) -> str:
+    def itinerary(self) -> Itinerary | None:
         result = self.results.get("itinerary")
-        return result.content if result else ""
+        return result.itinerary if result else None
 
     @property
     def errors(self) -> dict[str, str]:
@@ -158,36 +164,6 @@ class TripPlan:
             for agent_id, result in self.results.items()
             if result.error is not None
         }
-
-    def to_markdown(self) -> str:
-        lines = [
-            f"# VoyagerAI Trip Plan: {self.destination.display_name}",
-            "",
-            f"- Departure: {self.preferences.departure_city}",
-            f"- Nationality: {self.preferences.nationality_or_default}",
-            f"- Travel window: {self.preferences.travel_window}",
-            f"- Trip length: {self.preferences.nights} nights / {self.preferences.days} days",
-            f"- Flight preference: {self.preferences.flight_preference}",
-            f"- Travel style: {self.preferences.vibe_description}",
-            "",
-        ]
-
-        for agent_id in ("flight", "visa", "hotel", "experience", "itinerary"):
-            result = self.results.get(agent_id)
-            if not result:
-                continue
-            lines.extend([f"## {result.label}", "", result.content.strip(), ""])
-            if result.sources:
-                lines.extend(["### Sources Considered", ""])
-                lines.extend(source.to_markdown() for source in result.sources)
-                lines.append("")
-            lines.extend(f"> Search warning: {warning}" for warning in result.warnings)
-            if result.warnings:
-                lines.append("")
-            if result.error:
-                lines.extend([f"> Agent warning: {result.error}", ""])
-
-        return "\n".join(lines).strip() + "\n"
 
 
 def dedupe_destinations(destinations: Iterable[Destination]) -> list[Destination]:

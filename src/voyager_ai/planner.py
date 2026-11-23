@@ -2,15 +2,16 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping
+from typing import Any, TypeVar
 
 from voyager_ai.config import Settings, load_settings
 from voyager_ai.constants import AGENT_SEQUENCE
-from voyager_ai.llm import BaseLLMClient, build_llm_client
+from voyager_ai.fetch import NoopFetcher, PageFetcher
+from voyager_ai.llm import BaseLLMClient, ChunkSink, build_llm_client
 from voyager_ai.models import (
     AgentResult,
     Destination,
-    SearchResult,
     TravelPreferences,
     TripPlan,
     ValidationError,
@@ -21,12 +22,15 @@ from voyager_ai.parser import extract_json
 from voyager_ai.prompts import (
     DESTINATION_JSON_SCHEMA,
     RESEARCH_CONTEXT_CHARS,
-    agent_prompt,
+    AgentPrompt,
     discovery_prompt,
     itinerary_max_tokens,
+    itinerary_prompt,
     itinerary_tokens_for_context,
     research_chars_for_context,
+    research_prompt,
 )
+from voyager_ai.schemas import ITINERARY_SCHEMA, RESEARCH_SCHEMA
 from voyager_ai.search import (
     SearchClient,
     build_search_client,
@@ -34,8 +38,16 @@ from voyager_ai.search import (
     queries_for_agent,
     rank_results,
 )
+from voyager_ai.structured import Itinerary, ResearchReport
 
 ProgressCallback = Callable[[str, str, AgentResult | None], None]
+T = TypeVar("T")
+
+NO_PAGES_WARNING = "No pages could be read; this agent used search snippets only."
+REPAIR_NOTE = (
+    "\n\nYour previous reply could not be used: {error}. "
+    "Reply again with only JSON that matches the schema."
+)
 
 
 class TravelPlanner:
@@ -46,10 +58,12 @@ class TravelPlanner:
         settings: Settings | None = None,
         llm_client: BaseLLMClient | None = None,
         search_client: SearchClient | None = None,
+        fetcher: PageFetcher | NoopFetcher | None = None,
     ):
         self.settings = settings or load_settings()
         self.llm = llm_client or build_llm_client(self.settings)
         self.search = search_client or build_search_client(self.settings)
+        self.fetcher = fetcher if fetcher is not None else _default_fetcher(self.settings)
 
     def discover_destinations(
         self, preferences: TravelPreferences, avoid: Iterable[str] = ()
@@ -93,48 +107,106 @@ class TravelPlanner:
             )
         return destinations
 
-    def run_agent(
+    def research(
         self,
         agent_id: str,
         preferences: TravelPreferences,
         destination: Destination,
-        prior_results: dict[str, str] | None = None,
+        on_chunk: ChunkSink | None = None,
     ) -> AgentResult:
-        prior_results = prior_results or {}
-        sources: list[SearchResult] = []
-        warnings: list[str] = []
-        if agent_id != "itinerary":
-            queries = queries_for_agent(agent_id, preferences, destination)
-            outcome = self.search.search_many(queries, max_results=self.settings.search_max_results)
-            sources = rank_results(agent_id, outcome.results)
-            warnings = outcome.errors
-        search_context = format_search_context(sources)
-        itinerary_tokens = self._itinerary_tokens(preferences.days)
-        prompt = agent_prompt(
-            agent_id,
-            preferences,
-            destination,
-            search_context,
-            prior_results,
-            research_chars=self._research_chars(itinerary_tokens),
-            itinerary_tokens=itinerary_tokens,
+        """Search, read the top pages, then ask one research agent for a structured report."""
+
+        queries = queries_for_agent(agent_id, preferences, destination)
+        outcome = self.search.search_many(queries, max_results=self.settings.search_max_results)
+        results = rank_results(agent_id, outcome.results)
+        warnings = list(outcome.errors)
+
+        pages = []
+        for result in results[: self.settings.fetch_pages]:
+            page = self.fetcher.fetch(result.url, result.title)
+            if page is not None:
+                pages.append(page)
+        if results and self.settings.fetch_pages > 0 and not pages:
+            warnings.append(NO_PAGES_WARNING)
+
+        prompt = research_prompt(
+            agent_id, preferences, destination, format_search_context(results, pages)
         )
-        response = self.llm.complete(
-            agent_id=agent_id,
-            model=self.settings.model_for(agent_id),
-            system=prompt.system,
-            user=prompt.user,
-            temperature=prompt.temperature,
-            max_tokens=prompt.max_tokens,
+        allowed_urls = [result.url for result in results]
+        report, raw_text = self._complete_structured(
+            agent_id,
+            prompt,
+            RESEARCH_SCHEMA,
+            lambda payload: ResearchReport.from_payload(payload, allowed_urls),
+            on_chunk,
         )
         return AgentResult(
             agent_id=agent_id,
-            content=response.text,
-            model=response.model,
-            status="done",
-            sources=sources,
+            model=self.settings.model_for(agent_id),
+            report=report,
             warnings=warnings,
+            sources=results,
+            raw_text=raw_text,
         )
+
+    def build_itinerary(
+        self,
+        preferences: TravelPreferences,
+        destination: Destination,
+        research: Mapping[str, AgentResult],
+        on_chunk: ChunkSink | None = None,
+    ) -> AgentResult:
+        """Ask the itinerary agent for a structured plan built from the research reports."""
+
+        itinerary_tokens = self._itinerary_tokens(preferences.days)
+        prompt = itinerary_prompt(
+            preferences,
+            destination,
+            {agent_id: result.report for agent_id, result in research.items()},
+            research_chars=self._research_chars(itinerary_tokens),
+            max_tokens=itinerary_tokens,
+        )
+        itinerary, raw_text = self._complete_structured(
+            "itinerary",
+            prompt,
+            ITINERARY_SCHEMA,
+            lambda payload: Itinerary.from_payload(payload, preferences.days),
+            on_chunk,
+        )
+        return AgentResult(
+            agent_id="itinerary",
+            model=self.settings.model_for("itinerary"),
+            itinerary=itinerary,
+            raw_text=raw_text,
+        )
+
+    def _complete_structured(
+        self,
+        agent_id: str,
+        prompt: AgentPrompt,
+        schema: dict[str, Any],
+        parse: Callable[[Any], T],
+        on_chunk: ChunkSink | None,
+    ) -> tuple[T, str]:
+        """Call the model for JSON and parse it, with one repair attempt on a bad reply."""
+
+        def attempt(user: str) -> tuple[T, str]:
+            response = self.llm.complete(
+                agent_id=agent_id,
+                model=self.settings.model_for(agent_id),
+                system=prompt.system,
+                user=user,
+                temperature=prompt.temperature,
+                max_tokens=prompt.max_tokens,
+                json_schema=schema,
+                on_chunk=on_chunk,
+            )
+            return parse(extract_json(response.text)), response.text
+
+        try:
+            return attempt(prompt.user)
+        except ValidationError as exc:
+            return attempt(prompt.user + REPAIR_NOTE.format(error=exc))
 
     def _itinerary_tokens(self, days: int) -> int:
         """Reply budget for the itinerary agent, sized to the trip and, on Ollama, the window."""
@@ -159,41 +231,32 @@ class TravelPlanner:
         progress: ProgressCallback | None = None,
     ) -> TripPlan:
         results: dict[str, AgentResult] = {}
-        prior_text: dict[str, str] = {}
 
         for agent_id in AGENT_SEQUENCE:
             if progress:
                 progress(agent_id, "running", None)
             try:
-                result = self.run_agent(agent_id, preferences, destination, prior_text)
+                if agent_id == "itinerary":
+                    result = self.build_itinerary(preferences, destination, results)
+                else:
+                    result = self.research(agent_id, preferences, destination)
             except Exception as exc:
                 result = AgentResult(
                     agent_id=agent_id,
-                    content=_fallback_agent_content(agent_id, exc),
                     model=self.settings.model_for(agent_id),
                     status="error",
                     error=str(exc),
-                    sources=[],
                 )
             results[agent_id] = result
-            prior_text[agent_id] = result.content
             if progress:
                 progress(agent_id, result.status, result)
 
         return TripPlan(preferences=preferences, destination=destination, results=results)
 
 
-def _fallback_agent_content(agent_id: str, exc: Exception) -> str:
-    if agent_id == "itinerary":
-        return (
-            "## Itinerary unavailable\n"
-            "The itinerary agent could not complete this run.\n\n"
-            f"Reason: {exc}\n\n"
-            "You can retry after checking model availability and network/search settings."
-        )
-    return (
-        "## Research unavailable\n"
-        "This agent could not complete its research.\n\n"
-        f"Reason: {exc}\n\n"
-        "The final itinerary agent will continue with the remaining available context."
-    )
+def _default_fetcher(settings: Settings) -> PageFetcher | NoopFetcher:
+    """Read pages only when there can be live search results to read."""
+
+    if settings.provider == "demo" or not settings.search_enabled or settings.fetch_pages == 0:
+        return NoopFetcher()
+    return PageFetcher(max_chars=settings.page_chars)

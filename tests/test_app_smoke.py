@@ -53,3 +53,17 @@ def test_failed_refresh_shows_error_and_keeps_cards(monkeypatch):
     assert "discovery is down" in [e.value for e in app.error]
     assert len(app.session_state.destinations) == 8
     assert app.session_state.avoid_destinations == []
+
+
+def test_planned_trip_shows_rendered_markdown(monkeypatch):
+    monkeypatch.setenv("VOYAGER_LLM_PROVIDER", "demo")
+    monkeypatch.setenv("VOYAGER_ENABLE_SEARCH", "false")
+    app = AppTest.from_file(str(APP_PATH), default_timeout=30).run()
+    app.text_input[0].input("Mumbai")
+    app.button[0].click().run()
+    plan = next(b for b in app.button if b.label.startswith("Plan "))
+    plan.click().run()
+    assert not app.exception
+    rendered = "\n".join(block.value for block in app.markdown)
+    assert "### Day 1 -" in rendered and "## Budget" in rendered
+    assert any("# VoyagerAI Trip Plan:" in block.value for block in app.code)

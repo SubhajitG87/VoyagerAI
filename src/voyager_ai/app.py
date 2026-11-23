@@ -16,8 +16,8 @@ from voyager_ai.models import (
     ValidationError,
     VoyagerError,
 )
-from voyager_ai.parser import parse_itinerary
 from voyager_ai.planner import TravelPlanner
+from voyager_ai.render import render_markdown
 
 PROVIDERS = ["ollama", "openai-compatible", "nim", "demo"]
 
@@ -266,7 +266,7 @@ def trip_panel() -> None:
         f"{trip.preferences.nights} nights | {trip.preferences.travel_window}"
     )
 
-    markdown = trip.to_markdown()
+    markdown = render_markdown(trip)
     st.download_button(
         "Download Markdown",
         data=markdown,
@@ -276,16 +276,7 @@ def trip_panel() -> None:
 
     itinerary_tab, research_tab, raw_tab = st.tabs(["Itinerary", "Research", "Raw Markdown"])
     with itinerary_tab:
-        parsed = parse_itinerary(trip.itinerary)
-        if parsed.days:
-            for day in parsed.days:
-                with st.expander(f"Day {day.num} - {day.title}", expanded=day.num == 1):
-                    st.markdown(day.body)
-            for section in parsed.extras:
-                with st.expander(section.title):
-                    st.markdown(section.body)
-        else:
-            st.markdown(trip.itinerary)
+        st.markdown(markdown)
 
     with research_tab:
         for _agent_id, result in trip.results.items():
@@ -295,7 +286,8 @@ def trip_panel() -> None:
             ):
                 if result.error:
                     st.error(result.error)
-                st.markdown(result.content)
+                for warning in result.warnings:
+                    st.warning(warning)
                 if result.sources:
                     st.write("Sources considered")
                     for source in result.sources:

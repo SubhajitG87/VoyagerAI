@@ -12,6 +12,7 @@ from voyager_ai.config import MODEL_PRESETS, MODEL_RATIONALE, Settings, load_set
 from voyager_ai.constants import VIBES
 from voyager_ai.models import Destination, TravelPreferences, ValidationError, VoyagerError
 from voyager_ai.planner import TravelPlanner
+from voyager_ai.render import render_markdown
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -141,7 +142,7 @@ def cmd_plan(args: argparse.Namespace) -> int:
 
     out_path = _prepare_out_path(args.out)
     trip = planner.plan_trip(preferences, destination, progress=progress)
-    markdown = trip.to_markdown()
+    markdown = render_markdown(trip)
     if out_path:
         path = out_path
         try:

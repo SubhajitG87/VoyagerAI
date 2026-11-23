@@ -90,3 +90,19 @@ def test_use_preset_keeps_nim_models():
     settings = Settings(provider="nim")
     settings.use_preset("small")
     assert settings.model_map == NIM_MODELS
+
+
+def test_fetch_settings_defaults_and_env(monkeypatch):
+    settings = Settings.from_env()
+    assert (settings.fetch_pages, settings.page_chars) == (3, 4000)
+    monkeypatch.setenv("VOYAGER_FETCH_PAGES", "0")
+    monkeypatch.setenv("VOYAGER_PAGE_CHARS", "1200")
+    settings = Settings.from_env()
+    assert (settings.fetch_pages, settings.page_chars) == (0, 1200)
+
+
+def test_fetch_settings_have_floors(monkeypatch):
+    monkeypatch.setenv("VOYAGER_FETCH_PAGES", "-2")
+    monkeypatch.setenv("VOYAGER_PAGE_CHARS", "10")
+    settings = Settings.from_env()
+    assert (settings.fetch_pages, settings.page_chars) == (0, 500)
