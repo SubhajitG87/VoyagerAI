@@ -19,6 +19,8 @@ from voyager_ai.models import (
 from voyager_ai.parser import parse_itinerary
 from voyager_ai.planner import TravelPlanner
 
+PROVIDERS = ["ollama", "openai-compatible", "nim", "demo"]
+
 
 def main() -> None:
     st.set_page_config(page_title="VoyagerAI", page_icon="✈️", layout="wide")
@@ -64,10 +66,8 @@ def sidebar_settings():
         st.header("Runtime")
         provider = st.selectbox(
             "LLM provider",
-            ["ollama", "openai-compatible", "demo"],
-            index=["ollama", "openai-compatible", "demo"].index(settings.provider)
-            if settings.provider in {"ollama", "openai-compatible", "demo"}
-            else 0,
+            PROVIDERS,
+            index=PROVIDERS.index(settings.provider) if settings.provider in PROVIDERS else 0,
         )
         preset = st.selectbox(
             "Model preset",

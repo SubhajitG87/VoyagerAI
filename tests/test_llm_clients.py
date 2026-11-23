@@ -6,14 +6,16 @@ import unittest
 from unittest.mock import MagicMock, patch
 
 import httpx
+import pytest
 from httpx import HTTPStatusError, TimeoutException
 
-from voyager_ai.config import Settings
+from voyager_ai.config import NIM_BASE_URL, NIM_SCHEMA_MODE, Settings
 from voyager_ai.llm import (
     DemoLLMClient,
     LLMError,
     OllamaClient,
     OpenAICompatibleClient,
+    apply_schema,
     build_llm_client,
 )
 
@@ -451,3 +453,87 @@ class TestStreaming(unittest.TestCase):
         )
         self.assertEqual(len(chunks), 3)
         self.assertEqual("".join(chunks), result.text)
+
+
+def test_apply_schema_modes():
+    base, schema = {"model": "m"}, {"type": "object"}
+    assert apply_schema(base, schema, "json_schema", "d")["response_format"] == {
+        "type": "json_schema",
+        "json_schema": {"name": "d", "schema": schema},
+    }
+    assert apply_schema(base, schema, "nvext_guided", "d")["nvext"] == {"guided_json": schema}
+    assert apply_schema(base, schema, "vllm_guided", "d")["guided_json"] == schema
+    assert apply_schema(base, schema, "json_object", "d")["response_format"] == {
+        "type": "json_object"
+    }
+    assert base == {"model": "m"}
+
+
+def _ok_response() -> MagicMock:
+    ok = MagicMock(status_code=200)
+    ok.json.return_value = {"choices": [{"message": {"content": "{}"}}]}
+    return ok
+
+
+def test_nvext_mode_falls_back_to_json_object_on_400():
+    client = OpenAICompatibleClient("http://x/v1", schema_mode="nvext_guided", sleep=_no_sleep)
+    with patch(
+        "voyager_ai.llm.httpx.post", side_effect=[MagicMock(status_code=400), _ok_response()]
+    ) as post:
+        client.complete(
+            agent_id="a", model="m", system="", user="u", json_schema={"type": "object"}
+        )
+    first, second = (c[1]["json"] for c in post.call_args_list)
+    assert first["nvext"] == {"guided_json": {"type": "object"}}
+    assert second["response_format"] == {"type": "json_object"}
+    assert "nvext" not in second
+
+
+def test_fallback_disabled_does_not_retry_400():
+    client = OpenAICompatibleClient("http://x/v1", fallback=False, sleep=_no_sleep)
+    rejected = MagicMock(status_code=400)
+    rejected.raise_for_status.side_effect = HTTPStatusError(
+        "400", request=MagicMock(), response=rejected
+    )
+    with patch("voyager_ai.llm.httpx.post", return_value=rejected) as post:
+        with pytest.raises(LLMError):
+            client.complete(
+                agent_id="a", model="m", system="", user="u", json_schema={"type": "object"}
+            )
+    assert post.call_count == 1
+
+
+def test_json_object_mode_has_no_fallback_request():
+    client = OpenAICompatibleClient("http://x/v1", schema_mode="json_object", sleep=_no_sleep)
+    rejected = MagicMock(status_code=400)
+    rejected.raise_for_status.side_effect = HTTPStatusError(
+        "400", request=MagicMock(), response=rejected
+    )
+    with patch("voyager_ai.llm.httpx.post", return_value=rejected) as post:
+        with pytest.raises(LLMError):
+            client.complete(
+                agent_id="a", model="m", system="", user="u", json_schema={"type": "object"}
+            )
+    assert post.call_count == 1
+
+
+def test_build_nim_requires_key(monkeypatch):
+    monkeypatch.delenv("NVIDIA_API_KEY", raising=False)
+    with pytest.raises(LLMError, match="NVIDIA_API_KEY"):
+        build_llm_client(Settings(provider="nim"))
+
+
+def test_build_nim_client():
+    client = build_llm_client(Settings(provider="nim", nvidia_api_key="k"))
+    assert isinstance(client, OpenAICompatibleClient)
+    assert client.base_url == NIM_BASE_URL
+    assert client.api_key == "k"
+    assert client.schema_mode == NIM_SCHEMA_MODE
+
+
+def test_schema_mode_setting_overrides_provider_default():
+    client = build_llm_client(
+        Settings(provider="nim", nvidia_api_key="k", schema_mode="nvext_guided")
+    )
+    assert client.schema_mode == "nvext_guided"
+    assert build_llm_client(Settings(provider="openai")).schema_mode == "json_schema"

@@ -74,7 +74,7 @@ def add_common_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--direct", action="store_true", help="Prefer direct flights only.")
     parser.add_argument(
         "--provider",
-        choices=["ollama", "openai-compatible", "demo"],
+        choices=["ollama", "openai-compatible", "nim", "demo"],
         default="",
         help="Override VOYAGER_LLM_PROVIDER for this run.",
     )

@@ -1,4 +1,11 @@
-from voyager_ai.config import MODEL_PRESETS, Settings, resolve_model_map
+from voyager_ai.config import (
+    AGENT_IDS,
+    MODEL_PRESETS,
+    NIM_BASE_URL,
+    NIM_MODELS,
+    Settings,
+    resolve_model_map,
+)
 
 
 def test_override_survives_preset_change():
@@ -51,3 +58,32 @@ def test_retry_and_think_settings(monkeypatch):
     monkeypatch.setenv("VOYAGER_OLLAMA_THINK", "maybe")
     s = Settings.from_env()
     assert s.llm_retries == 1 and s.ollama_think == "false"
+
+
+def test_nim_model_map_keeps_overrides():
+    env = {"VOYAGER_AGENT_MODEL_VISA": "custom/visa"}
+    model_map = resolve_model_map("small", env, provider="nim")
+    assert model_map["visa"] == "custom/visa"
+    assert model_map["flight"] == NIM_MODELS["flight"]
+
+
+def test_nim_models_cover_every_agent():
+    assert set(NIM_MODELS) == set(AGENT_IDS)
+
+
+def test_nim_settings_from_env(monkeypatch):
+    monkeypatch.setenv("VOYAGER_LLM_PROVIDER", "nim")
+    monkeypatch.setenv("NVIDIA_API_KEY", "k")
+    monkeypatch.delenv("NVIDIA_BASE_URL", raising=False)
+    monkeypatch.setenv("VOYAGER_SCHEMA_MODE", "vllm_guided")
+    settings = Settings.from_env()
+    assert settings.nvidia_api_key == "k"
+    assert settings.nvidia_base_url == NIM_BASE_URL
+    assert settings.schema_mode == "vllm_guided"
+    assert settings.model_map == NIM_MODELS
+
+
+def test_use_preset_keeps_nim_models():
+    settings = Settings(provider="nim")
+    settings.use_preset("small")
+    assert settings.model_map == NIM_MODELS

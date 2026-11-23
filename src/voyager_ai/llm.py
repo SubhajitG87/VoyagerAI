@@ -7,11 +7,11 @@ import re
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Literal, cast
 
 import httpx
 
-from voyager_ai.config import Settings
+from voyager_ai.config import NIM_SCHEMA_MODE, Settings
 from voyager_ai.models import VoyagerError
 from voyager_ai.parser import strip_reasoning
 from voyager_ai.retry import RetryableError, parse_retry_after, retry_call
@@ -38,6 +38,32 @@ def _check_response(response: httpx.Response) -> httpx.Response:
 
 class LLMError(VoyagerError):
     """Raised when an LLM provider cannot complete a request."""
+
+
+SchemaMode = Literal["json_schema", "nvext_guided", "vllm_guided", "json_object"]
+SCHEMA_MODES = ("json_schema", "nvext_guided", "vllm_guided", "json_object")
+
+
+def apply_schema(
+    payload: dict[str, Any], schema: dict[str, Any], mode: SchemaMode, name: str
+) -> dict[str, Any]:
+    """Return a copy of ``payload`` that asks the server for output matching ``schema``."""
+
+    body = dict(payload)
+    if mode == "json_schema":
+        body["response_format"] = {
+            "type": "json_schema",
+            "json_schema": {"name": name, "schema": schema},
+        }
+    elif mode == "nvext_guided":
+        body["nvext"] = {"guided_json": schema}
+    elif mode == "vllm_guided":
+        body["guided_json"] = schema
+    elif mode == "json_object":
+        body["response_format"] = {"type": "json_object"}
+    else:
+        raise LLMError(f"Unknown schema mode: {mode}")
+    return body
 
 
 # Receives each content piece as a streaming client produces it.
@@ -231,12 +257,17 @@ class OpenAICompatibleClient(BaseLLMClient):
         timeout_s: int = 180,
         retries: int = 3,
         sleep: Callable[[float], None] = time.sleep,
+        schema_mode: SchemaMode = "json_schema",
+        fallback: bool = True,
     ):
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
         self.timeout_s = timeout_s
         self.retries = retries
         self.sleep = sleep
+        self.schema_mode = schema_mode
+        # Retry with plain JSON mode when the server rejects the schema (HTTP 400 or 422).
+        self.fallback = fallback
 
     def complete(
         self,
@@ -265,22 +296,22 @@ class OpenAICompatibleClient(BaseLLMClient):
         }
         if on_chunk is not None:
             payload["stream"] = True
+        fallback = payload
         if json_schema is not None:
-            # Ask for the schema itself, not just "some JSON". LM Studio, vLLM and
-            # llama.cpp server accept this form.
-            payload["response_format"] = {
-                "type": "json_schema",
-                "json_schema": {"name": f"{agent_id}_response", "schema": json_schema},
-            }
-        # Older servers only know JSON mode. The parser still validates the result.
-        fallback = {**payload, "response_format": {"type": "json_object"}}
+            name = f"{agent_id}_response"
+            payload = apply_schema(payload, json_schema, self.schema_mode, name)
+            # Older servers only know JSON mode. The parser still validates the result.
+            fallback = apply_schema(fallback, json_schema, "json_object", name)
+        can_fall_back = (
+            json_schema is not None and self.fallback and self.schema_mode != "json_object"
+        )
 
         url = f"{self.base_url}/chat/completions"
 
         def attempt() -> httpx.Response:
             try:
                 response = httpx.post(url, json=payload, headers=headers, timeout=self.timeout_s)
-                if json_schema is not None and response.status_code in SCHEMA_REJECTED_STATUSES:
+                if can_fall_back and response.status_code in SCHEMA_REJECTED_STATUSES:
                     response = httpx.post(
                         url, json=fallback, headers=headers, timeout=self.timeout_s
                     )
@@ -301,7 +332,7 @@ class OpenAICompatibleClient(BaseLLMClient):
 
         def attempt_stream() -> str:
             try:
-                return stream_once(payload, json_schema is not None)
+                return stream_once(payload, can_fall_back)
             except _SchemaRejected:
                 return stream_once(fallback, False)
 
@@ -358,6 +389,13 @@ class DemoLLMClient(BaseLLMClient):
         return LLMResponse(text=text, model="demo", raw={"provider": "demo"})
 
 
+def _schema_mode(configured: str, default: str) -> SchemaMode:
+    mode = configured or default
+    if mode not in SCHEMA_MODES:
+        raise LLMError(f"Unsupported VOYAGER_SCHEMA_MODE: {mode}. Use one of {SCHEMA_MODES}.")
+    return cast(SchemaMode, mode)
+
+
 def build_llm_client(settings: Settings) -> BaseLLMClient:
     provider = settings.provider.lower()
     if provider == "ollama":
@@ -374,6 +412,17 @@ def build_llm_client(settings: Settings) -> BaseLLMClient:
             settings.openai_api_key,
             settings.request_timeout_s,
             retries=settings.llm_retries,
+            schema_mode=_schema_mode(settings.schema_mode, "json_schema"),
+        )
+    if provider == "nim":
+        if not settings.nvidia_api_key:
+            raise LLMError("Set NVIDIA_API_KEY to use the nim provider.")
+        return OpenAICompatibleClient(
+            settings.nvidia_base_url,
+            settings.nvidia_api_key,
+            settings.request_timeout_s,
+            retries=settings.llm_retries,
+            schema_mode=_schema_mode(settings.schema_mode, NIM_SCHEMA_MODE),
         )
     if provider == "demo":
         return DemoLLMClient()

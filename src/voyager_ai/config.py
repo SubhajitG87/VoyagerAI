@@ -40,6 +40,19 @@ MODEL_RATIONALE = {
     "phi4-mini": "Small, quick fallback for laptops or constrained environments.",
 }
 
+NIM_BASE_URL = "https://integrate.api.nvidia.com/v1"
+
+# UNPROBED placeholders (2026-11-23): run scripts/probe_schema.py with NVIDIA_API_KEY and apply the selection rule in docs/superpowers/plans/2026-11-23-voyagerai-phase-1-engine.md, Task 3 Step 6.  # noqa: E501
+NIM_MODELS = {
+    "discovery": "nvidia/nemotron-3.5-lightning-30b-a3b",
+    "flight": "nvidia/nemotron-3.5-lightning-30b-a3b",
+    "visa": "mistralai/mistral-large-4-1t-a52b",
+    "hotel": "nvidia/nemotron-3.5-lightning-30b-a3b",
+    "experience": "nvidia/nemotron-3.5-lightning-30b-a3b",
+    "itinerary": "mistralai/mistral-large-4-1t-a52b",
+}
+NIM_SCHEMA_MODE = "json_schema"
+
 AGENT_IDS = ("discovery", "flight", "visa", "hotel", "experience", "itinerary")
 
 
@@ -73,11 +86,19 @@ def _env_think() -> str:
     return value if value in {"false", "true", "default"} else "false"
 
 
-def resolve_model_map(preset: str, env: Mapping[str, str] | None = None) -> dict[str, str]:
-    """Return a preset's agent models with per-agent environment overrides applied."""
+def resolve_model_map(
+    preset: str, env: Mapping[str, str] | None = None, provider: str = "ollama"
+) -> dict[str, str]:
+    """Return a preset's agent models with per-agent environment overrides applied.
+
+    The nim provider has one fixed model per agent whatever the preset.
+    """
 
     source = os.environ if env is None else env
-    model_map = dict(MODEL_PRESETS.get(preset, MODEL_PRESETS["balanced"]))
+    if provider == "nim":
+        model_map = dict(NIM_MODELS)
+    else:
+        model_map = dict(MODEL_PRESETS.get(preset, MODEL_PRESETS["balanced"]))
     for agent_id in AGENT_IDS:
         for prefix in ("VOYAGER_AGENT_MODEL_", "VOYAGER_MODEL_"):
             value = (source.get(f"{prefix}{agent_id.upper()}") or "").strip()
@@ -104,6 +125,10 @@ class Settings:
     research_context_chars: int = 0
     openai_base_url: str = "http://localhost:1234/v1"
     openai_api_key: str = ""
+    nvidia_api_key: str = ""
+    nvidia_base_url: str = NIM_BASE_URL
+    # Structured-output mode. "" means the provider default.
+    schema_mode: str = ""
     request_timeout_s: int = 180
     llm_retries: int = 3
     # Ollama "think" flag: "false" (default), "true", or "default" to leave it to the model.
@@ -119,10 +144,11 @@ class Settings:
         if preset not in MODEL_PRESETS:
             preset = "balanced"
 
+        provider = os.getenv("VOYAGER_LLM_PROVIDER", "ollama").strip().lower()
         return cls(
-            provider=os.getenv("VOYAGER_LLM_PROVIDER", "ollama").strip().lower(),
+            provider=provider,
             model_preset=preset,
-            model_map=resolve_model_map(preset),
+            model_map=resolve_model_map(preset, provider=provider),
             ollama_base_url=os.getenv("OLLAMA_BASE_URL", "http://localhost:11434").rstrip("/"),
             ollama_num_ctx=max(4096, _env_int("VOYAGER_OLLAMA_NUM_CTX", 16384)),
             research_context_chars=max(0, _env_int("VOYAGER_RESEARCH_CONTEXT_CHARS", 0)),
@@ -130,6 +156,9 @@ class Settings:
                 "OPENAI_COMPATIBLE_BASE_URL", "http://localhost:1234/v1"
             ).rstrip("/"),
             openai_api_key=os.getenv("OPENAI_COMPATIBLE_API_KEY", ""),
+            nvidia_api_key=os.getenv("NVIDIA_API_KEY", ""),
+            nvidia_base_url=os.getenv("NVIDIA_BASE_URL", NIM_BASE_URL).rstrip("/"),
+            schema_mode=os.getenv("VOYAGER_SCHEMA_MODE", "").strip().lower(),
             request_timeout_s=_env_int("VOYAGER_REQUEST_TIMEOUT_S", 180),
             llm_retries=max(1, _env_int("VOYAGER_LLM_RETRIES", 3)),
             ollama_think=_env_think(),
@@ -142,7 +171,7 @@ class Settings:
         """Switch preset while keeping per-agent environment overrides."""
 
         self.model_preset = preset if preset in MODEL_PRESETS else "balanced"
-        self.model_map = resolve_model_map(self.model_preset)
+        self.model_map = resolve_model_map(self.model_preset, provider=self.provider)
 
     def model_for(self, agent_id: str) -> str:
         return self.model_map.get(agent_id, self.model_map.get("itinerary", "qwen3:8b"))
