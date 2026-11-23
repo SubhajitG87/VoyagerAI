@@ -125,3 +125,40 @@ def test_cost_range_swaps_and_rejects_negative():
 def test_itinerary_without_days_is_rejected():
     with pytest.raises(ValidationError, match="no days"):
         Itinerary.from_payload({"days": [], "tips": [], "budget": {"items": []}}, 3)
+
+
+def test_malformed_url_is_downgraded_not_fatal():
+    f = _report(source_url="http://[bad").findings[0]
+    assert f.basis == "model" and f.source_url is None
+
+
+@pytest.mark.parametrize("bad", [float("nan"), float("inf"), float("-inf")])
+def test_cost_range_rejects_non_finite(bad):
+    with pytest.raises(ValidationError):
+        CostRange.from_payload({"low": bad, "high": 5})
+    with pytest.raises(ValidationError):
+        CostRange.from_payload({"low": 1, "high": bad})
+
+
+def test_root_slash_is_equivalent():
+    assert normalize_url("https://example.com") == normalize_url("https://example.com/")
+    f = ResearchReport.from_payload(
+        {
+            "summary": "S",
+            "findings": [
+                {
+                    "topic": "t",
+                    "claim": "c",
+                    "basis": "sourced",
+                    "source_url": "https://example.com",
+                }
+            ],
+        },
+        ["https://example.com/"],
+    ).findings[0]
+    assert f.basis == "sourced" and f.source_url == "https://example.com/"
+
+
+def test_sourced_without_url_becomes_model():
+    f = _report(basis="sourced", source_url=None).findings[0]
+    assert f.basis == "model" and f.source_url is None

@@ -6,6 +6,7 @@ labelled as model knowledge, so the report never presents an invented link as ev
 
 from __future__ import annotations
 
+import math
 from collections.abc import Collection
 from dataclasses import dataclass, field
 from typing import Any, Literal
@@ -22,10 +23,16 @@ SLOT_NAMES = ("morning", "afternoon", "evening")
 def normalize_url(url: str) -> str:
     """Lowercase scheme and host, drop the fragment and any trailing slash below the root."""
 
-    parts = urlsplit(clean_text(url))
+    cleaned = clean_text(url)
+    try:
+        parts = urlsplit(cleaned)
+    except ValueError:
+        return cleaned
     path = parts.path
     if len(path) > 1 and path.endswith("/"):
         path = path.rstrip("/") or "/"
+    if not path and parts.netloc:
+        path = "/"
     return urlunsplit((parts.scheme.lower(), parts.netloc.lower(), path, parts.query, ""))
 
 
@@ -88,6 +95,8 @@ class CostRange:
         for value in (low, high):
             if isinstance(value, bool) or not isinstance(value, (int, float)):
                 raise ValidationError("Cost amounts must be numbers.")
+            if not math.isfinite(value):
+                raise ValidationError("Cost amounts must be finite numbers.")
             if value < 0:
                 raise ValidationError("Cost amounts cannot be negative.")
         assert isinstance(low, (int, float)) and isinstance(high, (int, float))
