@@ -6,6 +6,7 @@ import ipaddress
 import logging
 import socket
 import threading
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from urllib.parse import urljoin, urlparse
@@ -51,8 +52,11 @@ def is_public_http_url(url: str, resolve: Resolver) -> bool:
             return False
         for address in addresses:
             ip = ipaddress.ip_address(address.split("%")[0])
+            if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
+                ip = ip.ipv4_mapped
             if (
-                ip.is_private
+                not ip.is_global
+                or ip.is_private
                 or ip.is_loopback
                 or ip.is_link_local
                 or ip.is_multicast
@@ -78,23 +82,28 @@ class PageFetcher:
         resolve: Resolver = default_resolve,
         client: httpx.Client | None = None,
         check_robots: bool = True,
+        total_timeout_s: float = 20.0,
+        clock: Callable[[], float] = time.monotonic,
     ):
         self.timeout_s = timeout_s
         self.max_bytes = max_bytes
         self.max_chars = max_chars
         self.resolve = resolve
-        self.client = client or httpx.Client(timeout=timeout_s)
+        self.total_timeout_s = total_timeout_s
+        self.clock = clock
+        self.client = client or httpx.Client(timeout=timeout_s, trust_env=False)
         self.check_robots = check_robots
         self._robots: dict[str, RobotFileParser | None] = {}
         self._lock = threading.Lock()
 
     def fetch(self, url: str, title: str = "") -> Page | None:
+        deadline = self.clock() + self.total_timeout_s
         try:
             if not is_public_http_url(url, self.resolve):
                 raise _Skip("not a public http(s) URL")
-            if self.check_robots and not self._robots_allow(url):
+            if self.check_robots and not self._robots_allow(url, deadline):
                 raise _Skip("disallowed by robots.txt")
-            status, content_type, body = self._get(url)
+            status, content_type, body = self._get(url, deadline)
             if status >= 400:
                 raise _Skip(f"HTTP {status}")
             if not content_type.lower().startswith(_HTML_TYPES):
@@ -111,17 +120,19 @@ class PageFetcher:
             logger.debug("Could not fetch %s: %s", url, exc, exc_info=True)
         return None
 
-    def _get(self, url: str, html_only: bool = True) -> tuple[int, str, bytes]:
+    def _get(self, url: str, deadline: float, html_only: bool = True) -> tuple[int, str, bytes]:
         """GET with manual, checked redirects and a streamed size cap."""
 
         current = url
-        for hop in range(MAX_REDIRECTS + 1):
-            if hop and not is_public_http_url(current, self.resolve):
-                raise _Skip(f"redirect to non-public URL {current}")
+        for _ in range(MAX_REDIRECTS + 1):
+            if self.clock() > deadline:
+                raise _Skip("total time limit exceeded")
+            if not is_public_http_url(current, self.resolve):
+                raise _Skip(f"non-public URL {current}")
             with self.client.stream(
                 "GET",
                 current,
-                headers={"User-Agent": USER_AGENT},
+                headers={"User-Agent": USER_AGENT, "Accept-Encoding": "identity"},
                 follow_redirects=False,
                 timeout=self.timeout_s,
             ) as response:
@@ -139,31 +150,31 @@ class PageFetcher:
                 body = bytearray()
                 for chunk in response.iter_bytes():
                     body.extend(chunk)
+                    if self.clock() > deadline:
+                        raise _Skip("total time limit exceeded")
                     if len(body) > self.max_bytes:
                         raise _Skip("body over size limit")
                 return response.status_code, content_type, bytes(body)
         raise _Skip("too many redirects")
 
-    def _robots_allow(self, url: str) -> bool:
+    def _robots_allow(self, url: str, deadline: float) -> bool:
         parsed = urlparse(url)
         key = f"{parsed.scheme}://{parsed.netloc}"
         with self._lock:
             known = key in self._robots
             parser = self._robots.get(key)
         if not known:
-            parser = self._load_robots(key)
+            parser = self._load_robots(key, deadline)
             with self._lock:
                 self._robots[key] = parser
         return parser is None or parser.can_fetch(USER_AGENT, url)
 
-    def _load_robots(self, origin: str) -> RobotFileParser | None:
+    def _load_robots(self, origin: str, deadline: float) -> RobotFileParser | None:
         """Parsed robots.txt, or None (everything allowed) when it is unavailable."""
 
         robots_url = f"{origin}/robots.txt"
         try:
-            if not is_public_http_url(robots_url, self.resolve):
-                return None
-            status, _, body = self._get(robots_url, html_only=False)
+            status, _, body = self._get(robots_url, deadline, html_only=False)
         except Exception as exc:
             logger.debug("No robots.txt for %s: %s", origin, exc)
             return None

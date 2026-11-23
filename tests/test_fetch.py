@@ -80,6 +80,10 @@ def test_is_public_http_url_rules() -> None:
     assert not is_public_http_url("https://e.org/", lambda h: ["0.0.0.0"])
     assert not is_public_http_url("https://e.org/", lambda h: ["224.0.0.1"])
     assert not is_public_http_url("https://e.org/", lambda h: ["not-an-ip"])
+    assert not is_public_http_url("https://e.org/", lambda h: ["100.64.0.1"])
+    assert not is_public_http_url("https://e.org/", lambda h: ["100.100.100.200"])
+    assert not is_public_http_url("https://e.org/", lambda h: ["::ffff:10.0.0.1"])
+    assert not is_public_http_url("https://e.org/", lambda h: ["::ffff:127.0.0.1"])
 
 
 def test_redirect_to_private_address_is_blocked() -> None:
@@ -239,3 +243,33 @@ def test_default_resolve_returns_unique_ips(monkeypatch: pytest.MonkeyPatch) -> 
     ]
     monkeypatch.setattr("voyager_ai.fetch.socket.getaddrinfo", lambda *a, **k: infos)
     assert default_resolve("x") == ["1.2.3.4", "::1"]
+
+
+def test_slow_body_is_abandoned_after_total_deadline() -> None:
+    now = [0.0]
+    chunks_read = 0
+
+    def body() -> object:
+        nonlocal chunks_read
+        for _ in range(100):
+            chunks_read += 1
+            now[0] += 9.0  # a trickle: one chunk every 9 seconds
+            yield b"<p>x</p>"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, headers={"content-type": "text/html"}, content=body())
+
+    fetcher = _fetcher(handler, total_timeout_s=20.0, clock=lambda: now[0])
+    assert fetcher.fetch("https://e.org/") is None
+    assert chunks_read <= 3
+
+
+def test_requests_ask_for_uncompressed_bodies() -> None:
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request.headers["accept-encoding"])
+        return html_handler(ARTICLE)(request)
+
+    assert _fetcher(handler).fetch("https://e.org/")
+    assert seen == ["identity"]
