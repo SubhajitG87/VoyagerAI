@@ -791,7 +791,7 @@ Update `tests/test_planner_context.py`, so `LongResearchLLM` returns a valid res
 
 - [ ] **Step 2: Run them to make sure they fail.** Expected: FAIL.
 
-- [ ] **Step 3: Implement** the changes listed under Interfaces. Delete the Phase 0 `agent_prompt`, `_flight_prompt`, `_visa_prompt`, `_hotel_prompt`, `_experience_prompt` and `_itinerary_prompt`, and delete their now-dead tests.
+- [ ] **Step 3: Implement** the changes listed under Interfaces. Delete the Phase 0 `agent_prompt`, `_flight_prompt`, `_visa_prompt`, `_hotel_prompt`, `_experience_prompt` and `_itinerary_prompt`, and delete their now-dead tests. Rewrite Task 5's `test_search_warnings_reach_the_trip_markdown` so it asserts that `"> Warning: Search failed"` appears in `render_markdown(trip)`.
 
 - [ ] **Step 4: Run the whole suite and checks, then smoke the CLI**
 
