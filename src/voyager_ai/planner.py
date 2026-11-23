@@ -10,6 +10,7 @@ from voyager_ai.llm import BaseLLMClient, build_llm_client
 from voyager_ai.models import (
     AgentResult,
     Destination,
+    SearchResult,
     TravelPreferences,
     TripPlan,
     ValidationError,
@@ -31,6 +32,7 @@ from voyager_ai.search import (
     build_search_client,
     format_search_context,
     queries_for_agent,
+    rank_results,
 )
 
 ProgressCallback = Callable[[str, str, AgentResult | None], None]
@@ -99,10 +101,13 @@ class TravelPlanner:
         prior_results: dict[str, str] | None = None,
     ) -> AgentResult:
         prior_results = prior_results or {}
-        sources = []
+        sources: list[SearchResult] = []
+        warnings: list[str] = []
         if agent_id != "itinerary":
             queries = queries_for_agent(agent_id, preferences, destination)
-            sources = self.search.search_many(queries, max_results=self.settings.search_max_results)
+            outcome = self.search.search_many(queries, max_results=self.settings.search_max_results)
+            sources = rank_results(agent_id, outcome.results)
+            warnings = outcome.errors
         search_context = format_search_context(sources)
         itinerary_tokens = self._itinerary_tokens(preferences.days)
         prompt = agent_prompt(
@@ -128,6 +133,7 @@ class TravelPlanner:
             model=response.model,
             status="done",
             sources=sources,
+            warnings=warnings,
         )
 
     def _itinerary_tokens(self, days: int) -> int:

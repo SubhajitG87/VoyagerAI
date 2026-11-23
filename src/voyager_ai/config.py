@@ -136,6 +136,7 @@ class Settings:
     search_provider: str = "duckduckgo"
     search_enabled: bool = True
     search_max_results: int = 4
+    search_retries: int = 2
 
     @classmethod
     def from_env(cls) -> Settings:
@@ -165,6 +166,7 @@ class Settings:
             search_provider=os.getenv("VOYAGER_SEARCH_PROVIDER", "duckduckgo").strip().lower(),
             search_enabled=_env_bool("VOYAGER_ENABLE_SEARCH", True),
             search_max_results=max(1, _env_int("VOYAGER_SEARCH_MAX_RESULTS", 4)),
+            search_retries=max(1, _env_int("VOYAGER_SEARCH_RETRIES", 2)),
         )
 
     def use_preset(self, preset: str) -> None:

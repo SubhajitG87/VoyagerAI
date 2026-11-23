@@ -131,6 +131,7 @@ class AgentResult:
     status: str = "done"
     error: str | None = None
     sources: list[SearchResult] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
 
     @property
     def label(self) -> str:
@@ -179,6 +180,9 @@ class TripPlan:
             if result.sources:
                 lines.extend(["### Sources Considered", ""])
                 lines.extend(source.to_markdown() for source in result.sources)
+                lines.append("")
+            lines.extend(f"> Search warning: {warning}" for warning in result.warnings)
+            if result.warnings:
                 lines.append("")
             if result.error:
                 lines.extend([f"> Agent warning: {result.error}", ""])
