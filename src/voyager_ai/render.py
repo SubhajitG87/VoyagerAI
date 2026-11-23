@@ -15,29 +15,29 @@ VISA_NOTE = "Check these rules on the official government site before you book."
 
 _RESEARCH_AGENTS = ("flight", "visa", "hotel", "experience")
 # Which booking links appear under which research section.
-_SECTION_LINKS = {"flight": ("Google Flights", "Skyscanner"), "hotel": ("Booking.com",)}
+SECTION_LINKS = {"flight": ("Google Flights", "Skyscanner"), "hotel": ("Booking.com",)}
 
 
-def _money(amount: float) -> str:
+def money(amount: float) -> str:
     return f"{round(amount):,}"
 
 
-def _cost(cost: CostRange) -> str:
-    return f"USD {_money(cost.low)}-{_money(cost.high)}"
+def cost_range(cost: CostRange) -> str:
+    return f"USD {money(cost.low)}-{money(cost.high)}"
 
 
-def _slot_line(name: str, slot: Slot) -> str:
+def slot_line(name: str, slot: Slot) -> str:
     text = slot.title
     if slot.description and slot.description != slot.title:
         text += f": {slot.description}"
     if slot.place:
         text += f" ({slot.place})"
     if slot.cost:
-        text += f" - {_cost(slot.cost)}"
+        text += f" - {cost_range(slot.cost)}"
     return f"**{name}** - {text}"
 
 
-def _finding_line(finding: Finding) -> str:
+def finding_line(finding: Finding) -> str:
     lead = f"**{finding.topic}:** " if finding.topic else ""
     if finding.basis == "sourced" and finding.source_url:
         return f"- {lead}{finding.claim} ([source]({finding.source_url}))"
@@ -69,9 +69,9 @@ def _itinerary(itinerary: Itinerary) -> list[str]:
     for day in itinerary.days:
         lines.append(f"### Day {day.number} - {day.title}\n")
         # A blank line after each slot keeps them as separate paragraphs.
-        lines.append(_slot_line("Morning", day.morning) + "\n")
-        lines.append(_slot_line("Afternoon", day.afternoon) + "\n")
-        lines.append(_slot_line("Evening", day.evening) + "\n")
+        lines.append(slot_line("Morning", day.morning) + "\n")
+        lines.append(slot_line("Afternoon", day.afternoon) + "\n")
+        lines.append(slot_line("Evening", day.evening) + "\n")
     if itinerary.tips:
         lines.append("## Practical Tips\n")
         lines.extend(f"- {tip}" for tip in itinerary.tips)
@@ -82,9 +82,9 @@ def _itinerary(itinerary: Itinerary) -> list[str]:
         lines.append(f"| Item | Low ({budget.currency}) | High ({budget.currency}) |")
         lines.append("| --- | ---: | ---: |")
         for item in budget.items:
-            lines.append(f"| {item.label} | {_money(item.cost.low)} | {_money(item.cost.high)} |")
+            lines.append(f"| {item.label} | {money(item.cost.low)} | {money(item.cost.high)} |")
         total = budget.total
-        lines.append(f"| **Total** | {_money(total.low)} | {_money(total.high)} |\n")
+        lines.append(f"| **Total** | {money(total.low)} | {money(total.high)} |\n")
     lines.extend(f"> Warning: {warning}\n" for warning in itinerary.warnings)
     return lines
 
@@ -96,16 +96,16 @@ def _research(plan: TripPlan, result: AgentResult, prices: PriceProvider) -> lis
     if result.report:
         lines.append(f"{result.report.summary}\n")
         if result.report.findings:
-            lines.extend(_finding_line(finding) for finding in result.report.findings)
+            lines.extend(finding_line(finding) for finding in result.report.findings)
             lines.append("")
-    names = _SECTION_LINKS.get(result.agent_id, ())
+    names = SECTION_LINKS.get(result.agent_id, ())
     if names:
         links = deep_links(plan.preferences, plan.destination)
         lines.append("### Booking Links\n")
         lines.extend(f"- [{name}]({links[name]})" for name in names)
         if result.agent_id == "flight":
             for quote in prices.quotes(plan.preferences, plan.destination):
-                lines.append(f"- [{quote.label}]({quote.url}) - {_cost(quote.cost)}")
+                lines.append(f"- [{quote.label}]({quote.url}) - {cost_range(quote.cost)}")
         lines.append("")
     if result.sources:
         lines.append("### Sources Considered\n")

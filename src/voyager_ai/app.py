@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 from html import escape
 
 import streamlit as st
@@ -10,14 +9,25 @@ import streamlit as st
 from voyager_ai.config import MODEL_PRESETS, load_settings
 from voyager_ai.constants import AGENT_SEQUENCE, AGENTS, CITIES, NATIONALITIES, VIBES
 from voyager_ai.events import PlanEvent
+from voyager_ai.links import deep_links
 from voyager_ai.models import (
+    AgentResult,
     Destination,
     TravelPreferences,
+    TripPlan,
     ValidationError,
     VoyagerError,
 )
 from voyager_ai.planner import TravelPlanner
-from voyager_ai.render import render_markdown
+from voyager_ai.render import (
+    SECTION_LINKS,
+    VISA_NOTE,
+    finding_line,
+    money,
+    render_markdown,
+    slot_line,
+)
+from voyager_ai.structured import Itinerary
 
 PROVIDERS = ["ollama", "openai-compatible", "nim", "demo"]
 EVENT_STATUS = {"agent_started": "running", "agent_finished": "done", "agent_failed": "error"}
@@ -272,47 +282,97 @@ def trip_panel() -> None:
     )
 
     markdown = render_markdown(trip)
-    st.download_button(
-        "Download Markdown",
-        data=markdown,
-        file_name=f"voyager_ai_{trip.destination.name.lower().replace(' ', '_')}.md",
-        mime="text/markdown",
+    itinerary_tab, research_tab, budget_tab, markdown_tab = st.tabs(
+        ["Itinerary", "Research", "Budget", "Markdown"]
     )
-
-    itinerary_tab, research_tab, raw_tab = st.tabs(["Itinerary", "Research", "Raw Markdown"])
     with itinerary_tab:
-        st.markdown(markdown)
-
+        itinerary_view(trip)
     with research_tab:
-        for _agent_id, result in trip.results.items():
-            with st.expander(
-                f"{result.label} ({result.status})",
-                expanded=result.error is not None,
-            ):
-                if result.error:
-                    st.error(result.error)
-                for warning in result.warnings:
-                    st.warning(warning)
-                if result.sources:
-                    st.write("Sources considered")
-                    for source in result.sources:
-                        st.markdown(f"- [{source.title}]({source.url}) - {source.snippet}")
-
-    with raw_tab:
+        research_view(trip)
+    with budget_tab:
+        budget_view(trip)
+    with markdown_tab:
         st.code(markdown, language="markdown")
         st.download_button(
-            "Download JSON Summary",
-            data=json.dumps(
-                {
-                    "destination": trip.destination.to_dict(),
-                    "errors": trip.errors,
-                    "models": {agent_id: result.model for agent_id, result in trip.results.items()},
-                },
-                indent=2,
-            ),
-            file_name="voyager_ai_summary.json",
-            mime="application/json",
+            "Download Markdown",
+            data=markdown,
+            file_name=f"voyager_ai_{trip.destination.name.lower().replace(' ', '_')}.md",
+            mime="text/markdown",
         )
+
+
+def itinerary_view(trip: TripPlan) -> None:
+    itinerary = trip.itinerary
+    if itinerary is None:
+        error = trip.results["itinerary"].error if "itinerary" in trip.results else None
+        st.error(error or "No itinerary could be built for this run.")
+        return
+    for day in itinerary.days:
+        with st.expander(f"Day {day.number} - {day.title}", expanded=day.number == 1):
+            for name, slot in (
+                ("Morning", day.morning),
+                ("Afternoon", day.afternoon),
+                ("Evening", day.evening),
+            ):
+                st.markdown(slot_line(name, slot))
+    if itinerary.tips:
+        st.markdown("#### Practical Tips")
+        st.markdown("\n".join(f"- {tip}" for tip in itinerary.tips))
+    for warning in itinerary.warnings:
+        st.warning(warning)
+
+
+def research_view(trip: TripPlan) -> None:
+    for result in trip.results.values():
+        if result.agent_id == "itinerary":
+            continue
+        with st.expander(f"{result.label} ({result.status})", expanded=result.error is not None):
+            research_result(trip, result)
+
+
+def research_result(trip: TripPlan, result: AgentResult) -> None:
+    if result.agent_id == "visa":
+        st.info(VISA_NOTE)
+    if result.report:
+        st.markdown(result.report.summary)
+        # Each line is a sourced link or carries the unsourced label.
+        for finding in result.report.findings:
+            st.markdown(finding_line(finding))
+    names = SECTION_LINKS.get(result.agent_id, ())
+    if names:
+        links = deep_links(trip.preferences, trip.destination)
+        st.markdown("\n".join(f"- [{name}]({links[name]})" for name in names))
+    if result.sources:
+        st.write("Sources considered")
+        for source in result.sources:
+            st.markdown(f"- [{source.title}]({source.url}) - {source.snippet}")
+    for warning in result.warnings:
+        st.warning(warning)
+    if result.error:
+        st.error(result.error)
+
+
+def budget_rows(itinerary: Itinerary) -> list[dict[str, str]]:
+    budget = itinerary.budget
+    rows = [
+        {
+            "Item": item.label,
+            "Low (USD)": money(item.cost.low),
+            "High (USD)": money(item.cost.high),
+        }
+        for item in budget.items
+    ]
+    total = budget.total
+    rows.append({"Item": "Total", "Low (USD)": money(total.low), "High (USD)": money(total.high)})
+    return rows
+
+
+def budget_view(trip: TripPlan) -> None:
+    itinerary = trip.itinerary
+    if itinerary is None or not itinerary.budget.items:
+        st.info("No budget is available for this trip.")
+        return
+    st.table(budget_rows(itinerary))
 
 
 def inject_css() -> None:

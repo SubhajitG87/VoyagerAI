@@ -5,6 +5,7 @@ from streamlit.testing.v1 import AppTest
 from voyager_ai.app import MAX_AVOID_DESTINATIONS, destination_card_html, merge_avoid_list
 from voyager_ai.models import Destination, VoyagerError
 from voyager_ai.planner import TravelPlanner
+from voyager_ai.render import UNSOURCED_LABEL, VISA_NOTE
 
 APP_PATH = Path(__file__).resolve().parents[1] / "src" / "voyager_ai" / "app.py"
 
@@ -55,15 +56,34 @@ def test_failed_refresh_shows_error_and_keeps_cards(monkeypatch):
     assert app.session_state.avoid_destinations == []
 
 
-def test_planned_trip_shows_rendered_markdown(monkeypatch):
+def test_full_demo_flow_shows_structured_trip(monkeypatch):
     monkeypatch.setenv("VOYAGER_LLM_PROVIDER", "demo")
     monkeypatch.setenv("VOYAGER_ENABLE_SEARCH", "false")
     app = AppTest.from_file(str(APP_PATH), default_timeout=30).run()
     app.text_input[0].input("Mumbai")
     app.button[0].click().run()
-    plan = next(b for b in app.button if b.label.startswith("Plan "))
-    plan.click().run()
+    next(b for b in app.button if b.label == "Plan Lisbon").click().run()
     assert not app.exception
-    rendered = "\n".join(block.value for block in app.markdown)
-    assert "### Day 1 -" in rendered and "## Budget" in rendered
+    assert any(e.label.startswith("Day 1 - ") for e in app.expander)
+    assert any(UNSOURCED_LABEL in m.value for m in app.markdown)
+    assert any(VISA_NOTE in i.value for i in app.info)
+    assert [t.label for t in app.tabs] == ["Itinerary", "Research", "Budget", "Markdown"]
+    assert len(app.table) == 1
     assert any("# VoyagerAI Trip Plan:" in block.value for block in app.code)
+
+
+def test_missing_itinerary_shows_error_instead_of_crashing(monkeypatch):
+    monkeypatch.setenv("VOYAGER_LLM_PROVIDER", "demo")
+    monkeypatch.setenv("VOYAGER_ENABLE_SEARCH", "false")
+    app = AppTest.from_file(str(APP_PATH), default_timeout=30).run()
+    app.text_input[0].input("Mumbai")
+    app.button[0].click().run()
+    next(b for b in app.button if b.label == "Plan Lisbon").click().run()
+    trip = app.session_state.trip
+    trip.results["itinerary"].itinerary = None
+    trip.results["itinerary"].error = "model returned nothing"
+    app.session_state.trip = trip
+    app.run()
+    assert not app.exception
+    assert "model returned nothing" in [e.value for e in app.error]
+    assert any("No budget" in i.value for i in app.info)
