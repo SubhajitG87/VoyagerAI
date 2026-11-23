@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 
 from voyager_ai.models import Destination, TravelPreferences
 from voyager_ai.schemas import DESTINATION_JSON_SCHEMA  # noqa: F401  (re-exported)
+from voyager_ai.structured import ResearchReport
 from voyager_ai.utils import truncate
 
 # Per-agent cap on research text handed to the itinerary agent.
@@ -13,7 +15,7 @@ RESEARCH_CONTEXT_CHARS = 12000
 # Smallest reply budget for the itinerary agent, in tokens.
 ITINERARY_MAX_TOKENS = 4200
 # Reply tokens allowed per itinerary day, plus a fixed share for tips and budget.
-ITINERARY_TOKENS_PER_DAY = 260
+ITINERARY_TOKENS_PER_DAY = 320
 ITINERARY_FIXED_TOKENS = 1200
 # Trips longer than this get an instruction to keep each day short.
 LONG_TRIP_DAYS = 10
@@ -21,6 +23,85 @@ LONG_TRIP_DAYS = 10
 MIN_RESEARCH_CHARS = 1100
 # Tokens kept for the itinerary instructions.
 INSTRUCTION_TOKENS = 512
+
+
+# What each research agent covers, shared by the structured and the Phase 0 prompts.
+_TOPICS = {
+    "flight": (
+        "likely gateways, top airlines, economy and business fare ranges in USD, "
+        "duration ranges, cheapest booking window, seasonal price variation, baggage or "
+        "schedule watch-outs, and practical Google Flights / Skyscanner search links or "
+        "query tips"
+    ),
+    "visa": (
+        "visa-free / e-visa / visa-on-arrival status, max stay, passport validity, "
+        "proof of funds or onward travel, health or insurance requirements, fees, processing "
+        "time, recent rule changes if found, official government links, and uncertainty notes"
+    ),
+    "hotel": (
+        "2-3 hotel names or hotel-like areas if exact live availability is unavailable, "
+        "neighbourhood, transit/access notes, standout feature, estimated nightly range in USD, "
+        "and one booking tip"
+    ),
+    "experience": (
+        "name, type, duration, estimated price per person, best time of day, "
+        "booking lead time, what makes it unmissable, and who should skip it"
+    ),
+}
+# (temperature, max_tokens) per research agent.
+_SAMPLING = {
+    "flight": (0.2, 2400),
+    "visa": (0.1, 2600),
+    "hotel": (0.25, 2600),
+    "experience": (0.35, 2800),
+}
+_ROLES = {
+    "flight": (
+        "You are Flight Scout, a flight research specialist. Do not invent exact live fares; "
+        "give ranges and source-backed caveats."
+    ),
+    "visa": (
+        "You are Visa Advisor, a careful visa and immigration specialist. Prioritise official "
+        "government sources. If a requirement is not clearly supported, say it needs "
+        "verification."
+    ),
+    "hotel": (
+        "You are Hotel Finder, a practical accommodation researcher. Compare neighbourhoods "
+        "and shortlist hotels by budget tier, and call out uncertainty in rates."
+    ),
+    "experience": (
+        "You are Experience Curator, a tours and activities specialist. Focus on {vibe}. "
+        "Prefer experiences that fit the trip length without overpacking."
+    ),
+}
+_JSON_RULE = "Return only JSON that matches the schema. Put each fact in its own finding."
+_RESEARCH_AGENTS = ("flight", "visa", "hotel", "experience")
+
+
+def _lead(agent_id: str, preferences: TravelPreferences, destination: Destination) -> str:
+    """The opening request for one research agent."""
+
+    if agent_id == "flight":
+        return (
+            f"Find the best {preferences.flight_preference} from {preferences.departure_city} to "
+            f"{destination.display_name}. Window: {preferences.travel_window}. "
+            f"Trip: {preferences.nights} nights. Nationality: "
+            f"{preferences.nationality_or_default}. Travel style: {preferences.vibe_description}."
+        )
+    if agent_id == "visa":
+        return (
+            f"Visa and entry requirements for a tourist whose nationality is "
+            f"{preferences.nationality_or_default}, visiting {destination.display_name}."
+        )
+    if agent_id == "hotel":
+        return (
+            f"Best hotels and neighbourhoods in {destination.display_name} for a "
+            f"{preferences.nights}-night trip focused on {preferences.vibe_description}."
+        )
+    return (
+        f"Top 7-8 tours and experiences in or around {destination.display_name} for a "
+        f"{preferences.nights}-night trip."
+    )
 
 
 def itinerary_max_tokens(days: int) -> int:
@@ -123,17 +204,16 @@ def _flight_prompt(
         "Do not invent exact live fares; provide ranges and source-backed caveats."
     )
     user = (
-        f"Find the best {preferences.flight_preference} from {preferences.departure_city} to "
-        f"{destination.display_name}. Window: {preferences.travel_window}. "
-        f"Trip: {preferences.nights} nights. Nationality: "
-        f"{preferences.nationality_or_default}. Travel style: {preferences.vibe_description}.\n\n"
+        f"{_lead('flight', preferences, destination)}\n\n"
         f"{search_context}\n\n"
-        "Include: likely gateways, top airlines, economy and business fare ranges in USD, "
-        "duration ranges, cheapest booking window, seasonal price variation, baggage or "
-        "schedule watch-outs, and practical Google Flights / Skyscanner search links or "
-        "query tips."
+        f"Include: {_TOPICS['flight']}."
     )
-    return AgentPrompt(system=system, user=user, temperature=0.2, max_tokens=2400)
+    return AgentPrompt(
+        system=system,
+        user=user,
+        temperature=_SAMPLING["flight"][0],
+        max_tokens=_SAMPLING["flight"][1],
+    )
 
 
 def _visa_prompt(
@@ -148,14 +228,13 @@ def _visa_prompt(
         "Use ## headings and end with a short 'Verify Before Booking' checklist."
     )
     user = (
-        f"Visa and entry requirements for a tourist whose nationality is "
-        f"{preferences.nationality_or_default}, visiting {destination.display_name}.\n\n"
+        f"{_lead('visa', preferences, destination)}\n\n"
         f"{search_context}\n\n"
-        "Cover: visa-free / e-visa / visa-on-arrival status, max stay, passport validity, "
-        "proof of funds or onward travel, health or insurance requirements, fees, processing "
-        "time, recent rule changes if found, official government links, and uncertainty notes."
+        f"Cover: {_TOPICS['visa']}."
     )
-    return AgentPrompt(system=system, user=user, temperature=0.1, max_tokens=2600)
+    return AgentPrompt(
+        system=system, user=user, temperature=_SAMPLING["visa"][0], max_tokens=_SAMPLING["visa"][1]
+    )
 
 
 def _hotel_prompt(
@@ -169,15 +248,17 @@ def _hotel_prompt(
         "shortlist hotels by budget tier. Use ## headings and call out uncertainty in rates."
     )
     user = (
-        f"Best hotels and neighbourhoods in {destination.display_name} for a "
-        f"{preferences.nights}-night trip focused on {preferences.vibe_description}.\n\n"
+        f"{_lead('hotel', preferences, destination)}\n\n"
         f"{search_context}\n\n"
-        "Give three tiers: Budget, Mid-range, Luxury. For each tier: 2-3 hotel names or "
-        "hotel-like areas if exact live availability is unavailable, neighbourhood, "
-        "transit/access notes, standout feature, estimated nightly range in USD, and one "
-        "booking tip."
+        "Give three tiers: Budget, Mid-range, Luxury. "
+        f"For each tier: {_TOPICS['hotel']}."
     )
-    return AgentPrompt(system=system, user=user, temperature=0.25, max_tokens=2600)
+    return AgentPrompt(
+        system=system,
+        user=user,
+        temperature=_SAMPLING["hotel"][0],
+        max_tokens=_SAMPLING["hotel"][1],
+    )
 
 
 def _experience_prompt(
@@ -192,14 +273,17 @@ def _experience_prompt(
         f"trip length without overpacking."
     )
     user = (
-        f"Top 7-8 tours and experiences in or around {destination.display_name} for a "
-        f"{preferences.nights}-night trip.\n\n"
+        f"{_lead('experience', preferences, destination)}\n\n"
         f"{search_context}\n\n"
-        "For each: name, type, duration, estimated price per person, best time of day, "
-        "booking lead time, what makes it unmissable, and who should skip it. Include a "
+        f"For each: {_TOPICS['experience']}. Include a "
         "balanced mix of anchors, local texture, and one flexible bad-weather option."
     )
-    return AgentPrompt(system=system, user=user, temperature=0.35, max_tokens=2800)
+    return AgentPrompt(
+        system=system,
+        user=user,
+        temperature=_SAMPLING["experience"][0],
+        max_tokens=_SAMPLING["experience"][1],
+    )
 
 
 def _itinerary_prompt(
@@ -267,3 +351,87 @@ def _itinerary_prompt(
         temperature=0.35,
         max_tokens=max_tokens or itinerary_max_tokens(preferences.days),
     )
+
+
+def research_prompt(
+    agent_id: str,
+    preferences: TravelPreferences,
+    destination: Destination,
+    context: str,
+) -> AgentPrompt:
+    """Prompt for one structured research agent (flight, visa, hotel or experience)."""
+
+    role = _ROLES[agent_id].format(vibe=preferences.vibe_description)
+    system = f"{role} Cover: {_TOPICS[agent_id]}. {_JSON_RULE}"
+    parts = [_lead(agent_id, preferences, destination)]
+    if context:
+        parts.append(context)
+    temperature, max_tokens = _SAMPLING[agent_id]
+    return AgentPrompt(
+        system=system,
+        user="\n\n".join(parts),
+        temperature=temperature,
+        max_tokens=max_tokens,
+    )
+
+
+def render_report_for_prompt(report: ResearchReport | None, missing: str) -> str:
+    """A research report as plain text for the itinerary prompt, or `missing` if absent."""
+
+    if report is None:
+        return missing
+    lines = [report.summary]
+    for finding in report.findings:
+        if finding.basis == "sourced" and finding.source_url:
+            lines.append(f"- [sourced] {finding.claim} ({finding.source_url})")
+        else:
+            lines.append(f"- [model] {finding.claim}")
+    return "\n".join(lines)
+
+
+def itinerary_prompt(
+    preferences: TravelPreferences,
+    destination: Destination,
+    reports: Mapping[str, ResearchReport | None],
+    research_chars: int,
+    max_tokens: int,
+) -> AgentPrompt:
+    """Prompt for the structured itinerary agent, built from the research reports."""
+
+    system = (
+        "You are Itinerary Architect, a master travel planner. Plan a vivid, practical, "
+        "day-by-day itinerary with named venues or areas in the morning, afternoon and evening "
+        "of every day. Return only JSON that matches the schema."
+    )
+    research = {
+        agent_id: truncate(
+            render_report_for_prompt(
+                reports.get(agent_id), f"No {agent_id} research was available."
+            ),
+            research_chars,
+        )
+        for agent_id in _RESEARCH_AGENTS
+    }
+    brevity = (
+        "\nThis is a long trip. Keep each morning, afternoon and evening to one or two "
+        "sentences so that every day, the tips and the budget fit."
+        if preferences.days > LONG_TRIP_DAYS
+        else ""
+    )
+    user = (
+        f"Create a {preferences.nights}-night itinerary ({preferences.days} days) for "
+        f"{preferences.departure_city} to {destination.display_name}.\n"
+        f"Travel style: {preferences.vibe_description}\n"
+        f"Flight preference: {preferences.flight_preference}\n"
+        f"Nationality: {preferences.nationality_or_default}\n"
+        f"Window: {preferences.travel_window}\n\n"
+        f"Flight context:\n{research['flight']}\n\n"
+        f"Visa context:\n{research['visa']}\n\n"
+        f"Hotel context:\n{research['hotel']}\n\n"
+        f"Experience context:\n{research['experience']}\n\n"
+        f"Include all {preferences.days} days, practical tips and a budget. The budget lines "
+        f"are: Return economy flights, Mid-range hotel ({preferences.nights} nights), Food, "
+        "Activities and Local transport, all in USD, plus a grand total range. Keep the "
+        f"schedule realistic and include rest/buffer time.{brevity}"
+    )
+    return AgentPrompt(system=system, user=user, temperature=0.35, max_tokens=max_tokens)

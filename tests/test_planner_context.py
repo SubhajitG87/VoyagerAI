@@ -53,14 +53,14 @@ def test_explicit_research_budget_wins_for_any_provider():
 
 def test_month_long_trip_on_ollama_trades_research_for_reply_room():
     llm, _ = _run(Settings(provider="ollama", ollama_num_ctx=16384), nights=30)
-    assert llm.max_tokens["itinerary"] == 9260
-    assert "R" * 4956 + "..." in llm.users["itinerary"]
-    assert "R" * 4960 not in llm.users["itinerary"]
+    assert llm.max_tokens["itinerary"] == 11120
+    assert "R" * 3561 + "..." in llm.users["itinerary"]
+    assert "R" * 3565 not in llm.users["itinerary"]
 
 
 def test_month_long_trip_on_hosted_provider_gets_full_reply_budget():
     llm, _ = _run(Settings(provider="openai-compatible"), nights=30)
-    assert llm.max_tokens["itinerary"] == 9260
+    assert llm.max_tokens["itinerary"] == 11120
 
 
 def test_demo_itinerary_covers_every_day_of_a_long_trip():
