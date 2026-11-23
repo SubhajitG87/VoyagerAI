@@ -2,6 +2,7 @@ import json
 
 from voyager_ai.config import Settings
 from voyager_ai.demo import demo_itinerary_payload
+from voyager_ai.fetch import NoopFetcher
 from voyager_ai.llm import DemoLLMClient
 from voyager_ai.models import Destination, SearchResult, TravelPreferences
 from voyager_ai.planner import TravelPlanner
@@ -159,3 +160,8 @@ def test_default_fetcher_is_noop_unless_fetching_can_happen():
     assert isinstance(fetcher_for(provider="ollama", fetch_pages=0), NoopFetcher)
     real = fetcher_for(provider="ollama", page_chars=900)
     assert isinstance(real, PageFetcher) and real.max_chars == 900
+
+
+def test_no_unreadable_warning_when_fetching_is_off():
+    trip = _demo_planner(search=TwoResultSearch(), fetcher=NoopFetcher()).plan_trip(PREFS, DEST)
+    assert trip.results["flight"].warnings == []

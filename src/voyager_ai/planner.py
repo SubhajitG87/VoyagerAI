@@ -2,11 +2,16 @@
 
 from __future__ import annotations
 
+import queue
+import threading
 from collections.abc import Callable, Iterable, Mapping
+from concurrent.futures import Future, ThreadPoolExecutor
+from functools import partial
 from typing import Any, TypeVar
 
 from voyager_ai.config import Settings, load_settings
 from voyager_ai.constants import AGENT_SEQUENCE
+from voyager_ai.events import EventSink, PlanEvent
 from voyager_ai.fetch import NoopFetcher, PageFetcher
 from voyager_ai.llm import BaseLLMClient, ChunkSink, build_llm_client
 from voyager_ai.models import (
@@ -40,8 +45,11 @@ from voyager_ai.search import (
 )
 from voyager_ai.structured import Itinerary, ResearchReport
 
-ProgressCallback = Callable[[str, str, AgentResult | None], None]
 T = TypeVar("T")
+
+RESEARCH_AGENTS = tuple(agent_id for agent_id in AGENT_SEQUENCE if agent_id != "itinerary")
+# How long the drain loop waits for an event before checking whether the agents are done.
+DRAIN_POLL_S = 0.05
 
 NO_PAGES_WARNING = "No pages could be read; this agent used search snippets only."
 REPAIR_NOTE = (
@@ -64,20 +72,23 @@ class TravelPlanner:
         self.llm = llm_client or build_llm_client(self.settings)
         self.search = search_client or build_search_client(self.settings)
         self.fetcher = fetcher if fetcher is not None else _default_fetcher(self.settings)
+        # Every LLM call takes a slot, so a local server is not asked for more than it can run.
+        self._llm_slots = threading.Semaphore(self.settings.effective_llm_concurrency)
 
     def discover_destinations(
         self, preferences: TravelPreferences, avoid: Iterable[str] = ()
     ) -> list[Destination]:
         prompt = discovery_prompt(preferences, avoid=", ".join(avoid))
-        response = self.llm.complete(
-            agent_id="discovery",
-            model=self.settings.model_for("discovery"),
-            system=prompt.system,
-            user=prompt.user,
-            temperature=prompt.temperature,
-            max_tokens=prompt.max_tokens,
-            json_schema=DESTINATION_JSON_SCHEMA,
-        )
+        with self._llm_slots:
+            response = self.llm.complete(
+                agent_id="discovery",
+                model=self.settings.model_for("discovery"),
+                system=prompt.system,
+                user=prompt.user,
+                temperature=prompt.temperature,
+                max_tokens=prompt.max_tokens,
+                json_schema=DESTINATION_JSON_SCHEMA,
+            )
         payload = extract_json(response.text)
         items = payload.get("destinations") if isinstance(payload, dict) else payload
         if not isinstance(items, list):
@@ -126,7 +137,8 @@ class TravelPlanner:
             page = self.fetcher.fetch(result.url, result.title)
             if page is not None:
                 pages.append(page)
-        if results and self.settings.fetch_pages > 0 and not pages:
+        fetching = self.settings.fetch_pages > 0 and not isinstance(self.fetcher, NoopFetcher)
+        if results and fetching and not pages:
             warnings.append(NO_PAGES_WARNING)
 
         prompt = research_prompt(
@@ -188,25 +200,29 @@ class TravelPlanner:
         parse: Callable[[Any], T],
         on_chunk: ChunkSink | None,
     ) -> tuple[T, str]:
-        """Call the model for JSON and parse it, with one repair attempt on a bad reply."""
+        """Call the model for JSON and parse it, with one repair attempt on a bad reply.
 
-        def attempt(user: str) -> tuple[T, str]:
-            response = self.llm.complete(
-                agent_id=agent_id,
-                model=self.settings.model_for(agent_id),
-                system=prompt.system,
-                user=user,
-                temperature=prompt.temperature,
-                max_tokens=prompt.max_tokens,
-                json_schema=schema,
-                on_chunk=on_chunk,
-            )
+        The repair attempt is not streamed, so a consumer never sees two replies as one stream.
+        """
+
+        def attempt(user: str, sink: ChunkSink | None) -> tuple[T, str]:
+            with self._llm_slots:
+                response = self.llm.complete(
+                    agent_id=agent_id,
+                    model=self.settings.model_for(agent_id),
+                    system=prompt.system,
+                    user=user,
+                    temperature=prompt.temperature,
+                    max_tokens=prompt.max_tokens,
+                    json_schema=schema,
+                    on_chunk=sink,
+                )
             return parse(extract_json(response.text)), response.text
 
         try:
-            return attempt(prompt.user)
+            return attempt(prompt.user, on_chunk)
         except ValidationError as exc:
-            return attempt(prompt.user + REPAIR_NOTE.format(error=exc))
+            return attempt(prompt.user + REPAIR_NOTE.format(error=exc), None)
 
     def _itinerary_tokens(self, days: int) -> int:
         """Reply budget for the itinerary agent, sized to the trip and, on Ollama, the window."""
@@ -228,30 +244,101 @@ class TravelPlanner:
         self,
         preferences: TravelPreferences,
         destination: Destination,
-        progress: ProgressCallback | None = None,
+        on_event: EventSink | None = None,
     ) -> TripPlan:
+        """Run the four research agents in parallel, then the itinerary agent.
+
+        Events are queued by the worker threads and passed to `on_event` on the calling
+        thread only. `plan_finished` is always the last event.
+        """
+
+        emit: EventSink = on_event or (lambda event: None)
+        events: queue.Queue[PlanEvent] = queue.Queue()
         results: dict[str, AgentResult] = {}
-
-        for agent_id in AGENT_SEQUENCE:
-            if progress:
-                progress(agent_id, "running", None)
-            try:
-                if agent_id == "itinerary":
-                    result = self.build_itinerary(preferences, destination, results)
-                else:
-                    result = self.research(agent_id, preferences, destination)
-            except Exception as exc:
-                result = AgentResult(
-                    agent_id=agent_id,
-                    model=self.settings.model_for(agent_id),
-                    status="error",
-                    error=str(exc),
+        executor = ThreadPoolExecutor(
+            max_workers=len(RESEARCH_AGENTS), thread_name_prefix="voyager-agent"
+        )
+        try:
+            research = {
+                agent_id: executor.submit(
+                    self._run_agent,
+                    agent_id,
+                    partial(self.research, agent_id, preferences, destination),
+                    events,
                 )
-            results[agent_id] = result
-            if progress:
-                progress(agent_id, result.status, result)
+                for agent_id in RESEARCH_AGENTS
+            }
+            _drain(events, list(research.values()), emit)
+            for agent_id, future in research.items():
+                results[agent_id] = future.result()
 
-        return TripPlan(preferences=preferences, destination=destination, results=results)
+            itinerary = executor.submit(
+                self._run_agent,
+                "itinerary",
+                partial(self.build_itinerary, preferences, destination, dict(results)),
+                events,
+            )
+            _drain(events, [itinerary], emit)
+            results["itinerary"] = itinerary.result()
+        except BaseException:
+            # Interrupted, or on_event raised: drop queued work and do not wait for
+            # calls already running; their events go nowhere.
+            executor.shutdown(wait=False, cancel_futures=True)
+            raise
+        executor.shutdown()
+
+        plan = TripPlan(preferences=preferences, destination=destination, results=results)
+        emit(PlanEvent("plan_finished", plan=plan))
+        return plan
+
+    def _run_agent(
+        self,
+        agent_id: str,
+        run: Callable[[ChunkSink], AgentResult],
+        events: queue.Queue[PlanEvent],
+    ) -> AgentResult:
+        """Worker body: run one agent, queueing its events. Never raises."""
+
+        events.put(PlanEvent("agent_started", agent_id))
+        try:
+            result = run(lambda text: events.put(PlanEvent("agent_chunk", agent_id, text=text)))
+        except BaseException as exc:  # one agent's failure must not end the plan
+            result = AgentResult(
+                agent_id=agent_id,
+                model=self.settings.model_for(agent_id),
+                status="error",
+                error=str(exc) or type(exc).__name__,
+            )
+        if result.status == "error":
+            events.put(PlanEvent("agent_failed", agent_id, text=result.error or "", result=result))
+        else:
+            events.put(PlanEvent("agent_finished", agent_id, result=result))
+        return result
+
+
+def _drain(
+    events: queue.Queue[PlanEvent], futures: list[Future[AgentResult]], emit: EventSink
+) -> None:
+    """Pass queued events to `emit` until every future is done and the queue is empty.
+
+    A worker queues all of its events before its future is done, so once every future is
+    done, whatever is left in the queue is the last of it.
+    """
+
+    while True:
+        try:
+            event = events.get(timeout=DRAIN_POLL_S)
+        except queue.Empty:
+            if all(future.done() for future in futures):
+                break
+            continue
+        emit(event)
+    while True:
+        try:
+            event = events.get_nowait()
+        except queue.Empty:
+            return
+        emit(event)
 
 
 def _default_fetcher(settings: Settings) -> PageFetcher | NoopFetcher:

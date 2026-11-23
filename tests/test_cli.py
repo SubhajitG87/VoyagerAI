@@ -42,7 +42,7 @@ def test_plan_out_directory_is_rejected_before_planning(tmp_path, capsys):
     assert main([*PLAN, "--out", str(tmp_path)]) == 1
     err = capsys.readouterr().err
     assert "VoyagerAI error: could not write" in err
-    assert "running" not in err
+    assert "started" not in err
 
 
 def test_plan_is_printed_when_the_final_write_fails(tmp_path, capsys, monkeypatch):
@@ -65,3 +65,26 @@ def test_provider_flag_rebuilds_model_map(monkeypatch):
     monkeypatch.setenv("VOYAGER_LLM_PROVIDER", "nim")
     settings = settings_from_args(argparse.Namespace(provider="ollama"))
     assert settings.model_map == MODEL_PRESETS["small"]
+
+
+def test_plan_prints_agent_progress(capsys):
+    assert main([*PLAN, "--nights", "3"]) == 0
+    err = capsys.readouterr().err
+    assert "[visa] started" in err and "[itinerary] done: 4 days" in err
+    assert err.rstrip().endswith("plan finished")
+    visa = next(line for line in err.splitlines() if line.startswith("[visa] done:"))
+    assert visa.endswith("sourced") and " findings, " in visa
+    # Chunks are not printed: every line is one of the fixed progress lines.
+    for line in err.strip().splitlines():
+        assert line == "plan finished" or line.split("] ", 1)[1].startswith(
+            ("started", "done: ", "failed: ")
+        )
+
+
+def test_failed_agent_line(capsys):
+    from voyager_ai.cli import print_event
+    from voyager_ai.events import PlanEvent
+
+    print_event(PlanEvent("agent_failed", "hotel", text="model timed out"))
+    print_event(PlanEvent("agent_chunk", "hotel", text="{partial"))
+    assert capsys.readouterr().err == "[hotel] failed: model timed out\n"

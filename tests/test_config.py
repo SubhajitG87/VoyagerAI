@@ -106,3 +106,16 @@ def test_fetch_settings_have_floors(monkeypatch):
     monkeypatch.setenv("VOYAGER_PAGE_CHARS", "10")
     settings = Settings.from_env()
     assert (settings.fetch_pages, settings.page_chars) == (0, 500)
+
+
+def test_effective_concurrency_defaults():
+    assert Settings(provider="ollama").effective_llm_concurrency == 1
+    assert Settings(provider="nim").effective_llm_concurrency == 4
+    assert Settings(provider="ollama", llm_concurrency=2).effective_llm_concurrency == 2
+
+
+def test_llm_concurrency_from_env(monkeypatch):
+    monkeypatch.setenv("VOYAGER_LLM_CONCURRENCY", "3")
+    assert Settings.from_env().llm_concurrency == 3
+    monkeypatch.setenv("VOYAGER_LLM_CONCURRENCY", "-2")
+    assert Settings.from_env().llm_concurrency == 0

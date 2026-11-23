@@ -9,8 +9,8 @@ import streamlit as st
 
 from voyager_ai.config import MODEL_PRESETS, load_settings
 from voyager_ai.constants import AGENT_SEQUENCE, AGENTS, CITIES, NATIONALITIES, VIBES
+from voyager_ai.events import PlanEvent
 from voyager_ai.models import (
-    AgentResult,
     Destination,
     TravelPreferences,
     ValidationError,
@@ -20,6 +20,7 @@ from voyager_ai.planner import TravelPlanner
 from voyager_ai.render import render_markdown
 
 PROVIDERS = ["ollama", "openai-compatible", "nim", "demo"]
+EVENT_STATUS = {"agent_started": "running", "agent_finished": "done", "agent_failed": "error"}
 
 
 def main() -> None:
@@ -235,10 +236,14 @@ def run_trip(
     status_box = st.empty()
     completed = set()
 
-    def progress(agent_id: str, status: str, result: AgentResult | None) -> None:
-        if status in {"done", "error"}:
+    def on_event(event: PlanEvent) -> None:
+        # Runs on this script thread only, so Streamlit calls are safe here.
+        agent_id = event.agent_id
+        if agent_id is None or event.kind not in EVENT_STATUS:
+            return
+        if event.kind in {"agent_finished", "agent_failed"}:
             completed.add(agent_id)
-        st.session_state.planning_log[agent_id] = status
+        st.session_state.planning_log[agent_id] = EVENT_STATUS[event.kind]
         progress_bar.progress(len(completed) / len(AGENT_SEQUENCE))
         lines = ["**Planning status**"]
         for current in AGENT_SEQUENCE:
@@ -248,7 +253,7 @@ def run_trip(
         status_box.markdown("\n".join(lines))
 
     with st.spinner(f"Running specialist agents for {destination.display_name}..."):
-        st.session_state.trip = planner.plan_trip(preferences, destination, progress=progress)
+        st.session_state.trip = planner.plan_trip(preferences, destination, on_event=on_event)
     if st.session_state.trip.errors:
         st.warning("The plan finished with agent warnings. See the research tabs for details.")
     else:

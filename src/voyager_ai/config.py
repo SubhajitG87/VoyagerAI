@@ -141,6 +141,8 @@ class Settings:
     fetch_pages: int = 3
     # Characters of readable text kept per fetched page.
     page_chars: int = 4000
+    # LLM calls allowed at once. 0 means automatic: 1 on Ollama, 4 elsewhere.
+    llm_concurrency: int = 0
 
     @classmethod
     def from_env(cls) -> Settings:
@@ -173,6 +175,7 @@ class Settings:
             search_retries=max(1, _env_int("VOYAGER_SEARCH_RETRIES", 2)),
             fetch_pages=max(0, _env_int("VOYAGER_FETCH_PAGES", 3)),
             page_chars=max(500, _env_int("VOYAGER_PAGE_CHARS", 4000)),
+            llm_concurrency=max(0, _env_int("VOYAGER_LLM_CONCURRENCY", 0)),
         )
 
     def use_preset(self, preset: str) -> None:
@@ -180,6 +183,14 @@ class Settings:
 
         self.model_preset = preset if preset in MODEL_PRESETS else "balanced"
         self.model_map = resolve_model_map(self.model_preset, provider=self.provider)
+
+    @property
+    def effective_llm_concurrency(self) -> int:
+        """LLM calls allowed at once; a local Ollama server handles one at a time."""
+
+        if self.llm_concurrency > 0:
+            return self.llm_concurrency
+        return 1 if self.provider == "ollama" else 4
 
     def model_for(self, agent_id: str) -> str:
         return self.model_map.get(agent_id, self.model_map.get("itinerary", "qwen3:8b"))
