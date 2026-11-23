@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from voyager_ai.models import Destination, TravelPreferences
+from voyager_ai.schemas import DESTINATION_JSON_SCHEMA  # noqa: F401  (re-exported)
 from voyager_ai.utils import truncate
 
 # Per-agent cap on research text handed to the itinerary agent.
@@ -49,35 +50,6 @@ def research_chars_for_context(num_ctx: int, reply_tokens: int = ITINERARY_MAX_T
 
     prompt_tokens = num_ctx - reply_tokens - INSTRUCTION_TOKENS
     return min(RESEARCH_CONTEXT_CHARS, max(MIN_RESEARCH_CHARS, prompt_tokens * 3 // 4))
-
-
-DESTINATION_JSON_SCHEMA = {
-    "type": "object",
-    "properties": {
-        "destinations": {
-            "type": "array",
-            "minItems": 1,
-            "maxItems": 8,
-            "items": {
-                "type": "object",
-                "properties": {
-                    "name": {"type": "string"},
-                    "country": {"type": "string"},
-                    "flag": {"type": "string"},
-                    "why": {"type": "string"},
-                    "tags": {
-                        "type": "array",
-                        "items": {"type": "string"},
-                        "minItems": 1,
-                        "maxItems": 3,
-                    },
-                },
-                "required": ["name", "country", "why", "tags"],
-            },
-        }
-    },
-    "required": ["destinations"],
-}
 
 
 @dataclass
