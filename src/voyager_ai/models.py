@@ -120,10 +120,6 @@ class SearchResult:
     url: str
     snippet: str = ""
 
-    def to_markdown(self) -> str:
-        snippet = f" - {self.snippet}" if self.snippet else ""
-        return f"- {self.title}: {self.url}{snippet}"
-
 
 @dataclass
 class AgentResult:

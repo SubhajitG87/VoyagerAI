@@ -1,6 +1,12 @@
 from voyager_ai.links import NoPrices, PriceQuote, deep_links
 from voyager_ai.models import AgentResult, Destination, SearchResult, TravelPreferences, TripPlan
-from voyager_ai.render import UNSOURCED_LABEL, VISA_NOTE, render_markdown
+from voyager_ai.render import (
+    ESTIMATE_NOTE,
+    UNSOURCED_LABEL,
+    VISA_NOTE,
+    md_escape,
+    render_markdown,
+)
 from voyager_ai.structured import (
     Budget,
     BudgetItem,
@@ -141,3 +147,68 @@ def test_deep_links():
     )
     assert links["Skyscanner"] == "https://www.skyscanner.net/"
     assert links["Booking.com"] == "https://www.booking.com/searchresults.html?ss=Tokyo%2C%20Japan"
+
+
+def test_estimate_note_sits_under_itinerary_and_budget():
+    itinerary = AgentResult(
+        "itinerary", model="m", itinerary=_itinerary([BudgetItem("Food", CostRange(10, 20))])
+    )
+    md = render_markdown(_trip({"itinerary": itinerary}))
+    assert f"## Itinerary\n\n{ESTIMATE_NOTE}\n" in md
+    assert f"## Budget\n\n{ESTIMATE_NOTE}\n" in md
+
+
+def test_md_escape():
+    assert md_escape("a [b](c) | *d* _e_ `f` <g> #h $1 \\") == (
+        "a \\[b\\]\\(c\\) \\| \\*d\\* \\_e\\_ \\`f\\` \\<g\\> \\#h \\$1 \\\\"
+    )
+    assert md_escape("one\n\n  two\r\nthree") == "one two three"
+
+
+def _report_trip(finding):
+    report = ResearchReport("Summary.", [finding])
+    return _trip({"visa": AgentResult("visa", model="m", report=report)})
+
+
+def test_injected_link_in_a_claim_is_not_a_link():
+    finding = Finding("Entry", "See [official site](https://evil.example) now.", "model")
+    md = render_markdown(_report_trip(finding))
+    assert "\\[official site\\]" in md
+    assert "](https://evil.example)" not in md
+
+
+def test_newline_in_a_claim_does_not_start_a_heading():
+    finding = Finding("Entry", "Fine.\n# Pwned", "model")
+    md = render_markdown(_report_trip(finding))
+    assert "\n# Pwned" not in md
+    assert "Fine. \\# Pwned" in md
+
+
+def test_pipe_in_a_budget_label_keeps_the_table_shape():
+    items = [BudgetItem("Food | drinks", CostRange(10, 20))]
+    itinerary = AgentResult("itinerary", model="m", itinerary=_itinerary(items))
+    md = render_markdown(_trip({"itinerary": itinerary}))
+    row = next(line for line in md.splitlines() if line.startswith("| Food"))
+    header = next(line for line in md.splitlines() if line.startswith("| Item"))
+    assert row.replace("\\|", "").count("|") == header.count("|")
+
+
+def test_dollar_amounts_are_not_latex():
+    itinerary = _itinerary()
+    itinerary.days[0].morning = Slot("Market", "$50 to $80 per person.", None, None)
+    md = render_markdown(
+        _trip({"itinerary": AgentResult("itinerary", model="m", itinerary=itinerary)})
+    )
+    assert "\\$50 to \\$80" in md
+
+
+def test_source_titles_are_escaped_and_urls_are_safe():
+    result = AgentResult(
+        "hotel",
+        model="m",
+        report=ResearchReport("S", []),
+        sources=[SearchResult("[Click](https://evil.example)", "https://a.example/x y)", "s")],
+    )
+    md = render_markdown(_trip({"hotel": result}))
+    assert "](https://evil.example)" not in md
+    assert "(https://a.example/x%20y%29)" in md

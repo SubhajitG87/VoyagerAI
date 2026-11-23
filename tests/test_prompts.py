@@ -1,6 +1,7 @@
 from voyager_ai.models import Destination, TravelPreferences
 from voyager_ai.prompts import (
     ITINERARY_MAX_TOKENS,
+    NO_VISA_TIPS_RULE,
     RESEARCH_CONTEXT_CHARS,
     discovery_prompt,
     itinerary_max_tokens,
@@ -110,3 +111,9 @@ def test_itinerary_prompt_placeholders_truncation_and_budget_labels():
 def test_itinerary_prompt_long_trip_asks_for_short_days():
     prompt = itinerary_prompt(TravelPreferences("Mumbai", nights=30), DEST, {}, 1200, 4200)
     assert "This is a long trip" in prompt.user
+
+
+def test_itinerary_prompt_keeps_visa_rules_out_of_tips():
+    prompt = itinerary_prompt(TravelPreferences("Mumbai"), DEST, {}, 1200, 4200)
+    assert NO_VISA_TIPS_RULE in prompt.user
+    assert "visa" in NO_VISA_TIPS_RULE.lower() and "Visa section" in NO_VISA_TIPS_RULE

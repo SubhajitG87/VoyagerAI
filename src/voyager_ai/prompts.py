@@ -74,6 +74,17 @@ _ROLES = {
         "Prefer experiences that fit the trip length without overpacking."
     ),
 }
+# Visa and entry rules belong in the sourced Visa section, never in unsourced tips.
+NO_VISA_TIPS_RULE = (
+    "Do not state visa or entry rules in the tips; refer the traveller to the Visa section instead."
+)
+# Asks for shorter days; used for long trips and when a reply was cut off at the token limit.
+BREVITY_NOTE = (
+    "Keep each morning, afternoon and evening to one or two sentences so that every day, "
+    "the tips and the budget fit."
+)
+# The same request for a research report that was cut off.
+RESEARCH_BREVITY_NOTE = "Keep the summary and each finding to one short sentence."
 _JSON_RULE = "Return only JSON that matches the schema. Put each fact in its own finding."
 _RESEARCH_AGENTS = ("flight", "visa", "hotel", "experience")
 
@@ -224,12 +235,7 @@ def itinerary_prompt(
         )
         for agent_id in _RESEARCH_AGENTS
     }
-    brevity = (
-        "\nThis is a long trip. Keep each morning, afternoon and evening to one or two "
-        "sentences so that every day, the tips and the budget fit."
-        if preferences.days > LONG_TRIP_DAYS
-        else ""
-    )
+    brevity = f"\nThis is a long trip. {BREVITY_NOTE}" if preferences.days > LONG_TRIP_DAYS else ""
     user = (
         f"Create a {preferences.nights}-night itinerary ({preferences.days} days) for "
         f"{preferences.departure_city} to {destination.display_name}.\n"
@@ -244,6 +250,6 @@ def itinerary_prompt(
         f"Include all {preferences.days} days, practical tips and a budget. The budget lines "
         f"are: Return economy flights, Mid-range hotel ({preferences.nights} nights), Food, "
         "Activities and Local transport, all in USD, plus a grand total range. Keep the "
-        f"schedule realistic and include rest/buffer time.{brevity}"
+        f"schedule realistic and include rest/buffer time. {NO_VISA_TIPS_RULE}{brevity}"
     )
     return AgentPrompt(system=system, user=user, temperature=0.35, max_tokens=max_tokens)

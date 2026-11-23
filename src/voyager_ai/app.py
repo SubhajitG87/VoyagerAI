@@ -20,12 +20,15 @@ from voyager_ai.models import (
 )
 from voyager_ai.planner import TravelPlanner
 from voyager_ai.render import (
+    ESTIMATE_NOTE,
     SECTION_LINKS,
     VISA_NOTE,
     finding_line,
+    md_escape,
     money,
     render_markdown,
     slot_line,
+    source_line,
 )
 from voyager_ai.structured import Itinerary
 
@@ -53,7 +56,12 @@ def main() -> None:
     )
 
     settings = sidebar_settings()
-    planner = TravelPlanner(settings=settings)
+    try:
+        planner = TravelPlanner(settings=settings)
+    except VoyagerError as exc:
+        # A misconfigured provider (no API key, unknown schema mode) is a message, not a crash.
+        st.error(str(exc))
+        st.stop()
     preferences_panel(planner)
     destination_panel(planner)
     trip_panel()
@@ -277,7 +285,8 @@ def trip_panel() -> None:
 
     st.subheader("3. Complete Travel Plan")
     st.markdown(
-        f"**{trip.destination.display_name}** from **{trip.preferences.departure_city}** | "
+        f"**{md_escape(trip.destination.display_name)}** from "
+        f"**{md_escape(trip.preferences.departure_city)}** | "
         f"{trip.preferences.nights} nights | {trip.preferences.travel_window}"
     )
 
@@ -305,10 +314,11 @@ def itinerary_view(trip: TripPlan) -> None:
     itinerary = trip.itinerary
     if itinerary is None:
         error = trip.results["itinerary"].error if "itinerary" in trip.results else None
-        st.error(error or "No itinerary could be built for this run.")
+        st.error(md_escape(error) if error else "No itinerary could be built for this run.")
         return
+    st.caption(ESTIMATE_NOTE)
     for day in itinerary.days:
-        with st.expander(f"Day {day.number} - {day.title}", expanded=day.number == 1):
+        with st.expander(f"Day {day.number} - {md_escape(day.title)}", expanded=day.number == 1):
             for name, slot in (
                 ("Morning", day.morning),
                 ("Afternoon", day.afternoon),
@@ -317,9 +327,9 @@ def itinerary_view(trip: TripPlan) -> None:
                 st.markdown(slot_line(name, slot))
     if itinerary.tips:
         st.markdown("#### Practical Tips")
-        st.markdown("\n".join(f"- {tip}" for tip in itinerary.tips))
+        st.markdown("\n".join(f"- {md_escape(tip)}" for tip in itinerary.tips))
     for warning in itinerary.warnings:
-        st.warning(warning)
+        st.warning(md_escape(warning))
 
 
 def research_view(trip: TripPlan) -> None:
@@ -334,7 +344,7 @@ def research_result(trip: TripPlan, result: AgentResult) -> None:
     if result.agent_id == "visa":
         st.info(VISA_NOTE)
     if result.report:
-        st.markdown(result.report.summary)
+        st.markdown(md_escape(result.report.summary))
         # Each line is a sourced link or carries the unsourced label.
         for finding in result.report.findings:
             st.markdown(finding_line(finding))
@@ -345,18 +355,19 @@ def research_result(trip: TripPlan, result: AgentResult) -> None:
     if result.sources:
         st.write("Sources considered")
         for source in result.sources:
-            st.markdown(f"- [{source.title}]({source.url}) - {source.snippet}")
+            st.markdown(source_line(source))
     for warning in result.warnings:
-        st.warning(warning)
+        st.warning(md_escape(warning))
     if result.error:
-        st.error(result.error)
+        st.error(md_escape(result.error))
 
 
 def budget_rows(itinerary: Itinerary) -> list[dict[str, str]]:
     budget = itinerary.budget
     rows = [
         {
-            "Item": item.label,
+            # st.table renders Markdown in cells.
+            "Item": md_escape(item.label),
             "Low (USD)": money(item.cost.low),
             "High (USD)": money(item.cost.high),
         }
@@ -372,6 +383,7 @@ def budget_view(trip: TripPlan) -> None:
     if itinerary is None or not itinerary.budget.items:
         st.info("No budget is available for this trip.")
         return
+    st.caption(ESTIMATE_NOTE)
     st.table(budget_rows(itinerary))
 
 
