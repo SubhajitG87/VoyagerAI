@@ -100,6 +100,8 @@ def settings_from_args(args: argparse.Namespace) -> Settings:
     settings = load_settings()
     if getattr(args, "provider", ""):
         settings.provider = args.provider
+        # The model map depends on the provider (nim has its own models).
+        settings.use_preset(settings.model_preset)
     if getattr(args, "no_search", False):
         settings.search_enabled = False
     return settings

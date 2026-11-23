@@ -13,7 +13,7 @@ import argparse
 import json
 import os
 import sys
-from typing import Any, get_args
+from typing import Any, cast, get_args
 
 from voyager_ai.config import NIM_BASE_URL
 from voyager_ai.llm import LLMError, OpenAICompatibleClient, SchemaMode
@@ -46,8 +46,8 @@ def probe(base_url: str, api_key: str, model: str, mode: str) -> str:
         base_url,
         api_key,
         retries=1,
-        schema_mode=mode,
-        fallback=False,  # type: ignore[arg-type]
+        schema_mode=cast(SchemaMode, mode),
+        fallback=False,
     )
     try:
         response = client.complete(

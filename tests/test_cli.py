@@ -1,7 +1,9 @@
+import argparse
 import json
 from pathlib import Path
 
-from voyager_ai.cli import main
+from voyager_ai.cli import main, settings_from_args
+from voyager_ai.config import MODEL_PRESETS, NIM_MODELS
 
 PLAN = [
     "plan",
@@ -49,3 +51,14 @@ def test_plan_is_printed_when_the_final_write_fails(tmp_path, capsys, monkeypatc
     out, err = capsys.readouterr()
     assert out.startswith("# VoyagerAI Trip Plan: Tokyo, Japan")
     assert "VoyagerAI error: could not write" in err
+
+
+def test_provider_flag_rebuilds_model_map(monkeypatch):
+    monkeypatch.setenv("VOYAGER_LLM_PROVIDER", "ollama")
+    monkeypatch.setenv("VOYAGER_MODEL_PRESET", "small")
+    settings = settings_from_args(argparse.Namespace(provider="nim"))
+    assert settings.model_map == NIM_MODELS
+
+    monkeypatch.setenv("VOYAGER_LLM_PROVIDER", "nim")
+    settings = settings_from_args(argparse.Namespace(provider="ollama"))
+    assert settings.model_map == MODEL_PRESETS["small"]

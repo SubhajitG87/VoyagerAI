@@ -73,6 +73,9 @@ def test_nim_models_cover_every_agent():
 
 def test_nim_settings_from_env(monkeypatch):
     monkeypatch.setenv("VOYAGER_LLM_PROVIDER", "nim")
+    for name in AGENT_IDS:
+        monkeypatch.delenv(f"VOYAGER_AGENT_MODEL_{name.upper()}", raising=False)
+        monkeypatch.delenv(f"VOYAGER_MODEL_{name.upper()}", raising=False)
     monkeypatch.setenv("NVIDIA_API_KEY", "k")
     monkeypatch.delenv("NVIDIA_BASE_URL", raising=False)
     monkeypatch.setenv("VOYAGER_SCHEMA_MODE", "vllm_guided")
