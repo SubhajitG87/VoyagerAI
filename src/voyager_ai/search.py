@@ -6,12 +6,13 @@ import importlib
 import logging
 import re
 import time
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, field
 from types import ModuleType
 from urllib.parse import urlparse
 
 from voyager_ai.config import Settings
+from voyager_ai.fetch import Page
 from voyager_ai.models import (
     Destination,
     SearchResult,
@@ -176,13 +177,29 @@ def queries_for_agent(
     return []
 
 
-def format_search_context(results: list[SearchResult], limit: int = 12) -> str:
-    if not results:
+_CITE_RULE = (
+    "Cite a source by copying its URL exactly into source_url. If no source supports a claim, "
+    'set basis to "model" and source_url to null.'
+)
+
+
+def format_search_context(
+    results: list[SearchResult], pages: Sequence[Page] = (), limit: int = 12
+) -> str:
+    if not results and not pages:
         return (
             "No live web snippets were available. Be explicit when a claim is based on general "
             "model knowledge rather than a source."
         )
-    lines = ["Use these search snippets as context; cite the URLs when they support a claim:"]
-    for result in results[:limit]:
-        lines.append(result.to_markdown())
-    return "\n".join(lines)
+    blocks = ["Use these sources as context."]
+    page_urls = {page.url for page in pages}
+    sources = [f"{page.title}\nURL: {page.url}\n{page.text}" for page in pages]
+    sources += [
+        f"{result.title}\nURL: {result.url}\nSnippet: {result.snippet}"
+        for result in results
+        if result.url not in page_urls
+    ]
+    for index, source in enumerate(sources[:limit], start=1):
+        blocks.append(f"Source [{index}]: {source}")
+    blocks.append(_CITE_RULE)
+    return "\n\n".join(blocks)

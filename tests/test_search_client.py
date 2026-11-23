@@ -9,6 +9,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from voyager_ai.config import Settings
+from voyager_ai.fetch import Page
 from voyager_ai.models import Destination, SearchResult, TravelPreferences
 from voyager_ai.search import (
     DuckDuckGoSearchClient,
@@ -213,7 +214,7 @@ class TestFormatSearchContext(unittest.TestCase):
             SearchResult(title="Guide", url="https://example.com", snippet="A guide."),
         ]
         result = format_search_context(results)
-        self.assertIn("Use these search snippets", result)
+        self.assertIn("Snippet: A guide.", result)
         self.assertIn("Guide", result)
         self.assertIn("https://example.com", result)
         self.assertIn("A guide.", result)
@@ -223,7 +224,7 @@ class TestFormatSearchContext(unittest.TestCase):
             SearchResult(title=f"Result {i}", url=f"https://example.com/{i}") for i in range(20)
         ]
         result = format_search_context(results, limit=5)
-        self.assertEqual(len(result.splitlines()), 6)
+        self.assertEqual(result.count("Source ["), 5)
 
     def test_snippet_field_is_optional(self) -> None:
         results = [SearchResult(title="No Snippet", url="https://example.com")]
@@ -316,3 +317,18 @@ def test_build_search_client_passes_retries():
     client = build_search_client(Settings(search_retries=5))
     assert isinstance(client, DuckDuckGoSearchClient)
     assert client.retries == 5
+
+
+def test_context_lists_pages_then_snippets_with_cite_rule() -> None:
+    ctx = format_search_context([r("a"), r("b")], pages=[Page("https://a", "A", "Body A")])
+    assert ctx.index("Body A") < ctx.index("https://b")
+    assert ctx.count("https://a") == 1
+    assert "Source [1]: A\nURL: https://a\nBody A" in ctx
+    assert "Source [2]: b\nURL: https://b\nSnippet: " in ctx
+    assert ctx.rstrip().endswith('set basis to "model" and source_url to null.')
+
+
+def test_context_limit_counts_pages_and_snippets() -> None:
+    results = [r_url(f"https://x/{i}") for i in range(10)]
+    pages = [Page(f"https://p/{i}", "P", "body") for i in range(2)]
+    assert format_search_context(results, pages=pages, limit=5).count("Source [") == 5
