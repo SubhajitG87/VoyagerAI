@@ -65,8 +65,8 @@ Then run:
 streamlit run src/voyager_ai/app.py
 ```
 
-The app talks to Ollama through `/api/chat` and uses Ollama structured outputs for destination
-JSON. See the official Ollama docs for the chat API and structured output format:
+The app talks to Ollama through `/api/chat` and uses Ollama structured outputs for every agent's
+JSON (destinations, research reports and the itinerary). See the official Ollama docs for the chat API and structured output format:
 
 - [Ollama chat API](https://docs.ollama.com/api/chat)
 - [Ollama structured outputs](https://docs.ollama.com/capabilities/structured-outputs)
@@ -130,11 +130,12 @@ Other variables (defaults in brackets; values below the minimum are raised to it
 
 | Variable | Meaning |
 | --- | --- |
-| `VOYAGER_LLM_RETRIES` [3, min 1] | Attempts per model call when the reply is not valid structured output. |
+| `VOYAGER_LLM_RETRIES` [3; 5 on `nim`; min 1] | Transport attempts per model call, for HTTP 429, 5xx and connection errors. A 429 waits at least 15 s (longer if `Retry-After` says so, up to 60 s). This does not cover invalid structured output: a reply that does not match the schema gets exactly one repair attempt, which is not configurable. |
 | `VOYAGER_OLLAMA_THINK` [`false`] | Ollama "think" flag: `false`, `true`, or `default` to leave it to the model. |
 | `VOYAGER_SCHEMA_MODE` [provider default] | Structured-output mode: `json_schema`, `nvext_guided`, `vllm_guided` or `json_object`. |
+| `VOYAGER_SEARCH_PROVIDER` [`duckduckgo`] | Web search provider: `duckduckgo`, or `none` to turn search off (as does `VOYAGER_ENABLE_SEARCH=false`). |
 | `VOYAGER_SEARCH_RETRIES` [2, min 1] | Attempts per web search. |
-| `VOYAGER_SEARCH_MAX_RESULTS` [4, min 1] | Search results per agent. |
+| `VOYAGER_SEARCH_MAX_RESULTS` [4, min 1] | Search results per query. Each research agent runs 3 queries, and its prompt shows at most 12 sources. |
 | `VOYAGER_FETCH_PAGES` [3, 0 turns it off] | Top search results each research agent reads in full. |
 | `VOYAGER_PAGE_CHARS` [4000, min 500] | Characters of readable text kept per fetched page. |
 | `VOYAGER_LLM_CONCURRENCY` [0 = automatic] | Model calls allowed at once: 1 on Ollama, 4 elsewhere. |
@@ -144,8 +145,9 @@ Other variables (defaults in brackets; values below the minimum are raised to it
 agent reads all four research reports. With a smaller window the reports are trimmed to fit, so
 lowering it saves memory at the cost of detail in the final itinerary.
 
-The itinerary agent's reply budget grows with trip length (about 260 tokens a day, at least
-4200). Trips longer than about two weeks need the default 16384-token window or more; with a
+The itinerary agent's reply budget grows with trip length (320 tokens a day plus 1200 for the tips
+and budget, at least 4200). A reply cut off at that limit is retried once with a request for
+shorter days and 50% more tokens, as far as the Ollama window allows. Trips longer than about two weeks need the default 16384-token window or more; with a
 smaller one the reply budget is capped and the last days, tips or budget may be cut off.
 
 On OpenAI-compatible servers the app cannot see the context size. If your server is loaded with
@@ -177,12 +179,19 @@ llama.cpp server.
 ## How sources work
 
 Each research agent searches the web and reads the top few result pages
-(`VOYAGER_FETCH_PAGES`). The model is asked to give each finding the URL it came from. A finding
-is marked as sourced when that URL is one of the search results from this run; otherwise, or when
-it gives no URL, it is labelled `unverified: model knowledge` in the app and in the Markdown
-output. With search disabled, or when no search results come back, every finding gets that label.
+(`VOYAGER_FETCH_PAGES`). Its prompt shows at most 12 sources: the pages it read first, then
+search snippets. The model is asked to mark each finding `sourced` with the URL it came from, or
+`model` when no source supports it. A finding is shown as sourced only when the model marked it
+`sourced` and its URL is one of the sources shown in that prompt. Anything else (a finding the
+model marked `model`, one with no URL, or one citing a URL it was not shown) is labelled
+`unverified: model knowledge` in the app and in the Markdown output, with no link. With search
+disabled, or when no search results come back, every finding gets that label.
 
-The app checks only that the cited URL was in the search results. It does not check that the
+Prices, the budget and the itinerary carry a note that they are estimates to check with the
+booking links. Model and search text is escaped before it is shown, so it cannot add its own
+links.
+
+The app checks only that the cited URL was one of the sources shown to the model. It does not check that the
 page says what the claim says, and a sourced URL may be one of the results the agent only saw as
 a snippet rather than read in full. Treat a sourced finding as a place to check, and an
 unverified one as the model's own knowledge.
