@@ -4,14 +4,20 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
 
 from voyager_ai.config import MODEL_PRESETS, MODEL_RATIONALE, Settings, load_settings
 from voyager_ai.constants import VIBES
+from voyager_ai.events import PlanEvent
 from voyager_ai.models import Destination, TravelPreferences, ValidationError, VoyagerError
-from voyager_ai.planner import TravelPlanner
+from voyager_ai.planner import UNKNOWN_ERROR, TravelPlanner
+from voyager_ai.render import render_markdown
+
+# Seam for tests: ends the process without waiting for agent threads.
+_hard_exit = os._exit
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -24,6 +30,10 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     except KeyboardInterrupt:
         print("\nCancelled.", file=sys.stderr)
+        sys.stdout.flush()
+        sys.stderr.flush()
+        # Agent threads may still be inside an LLM call; exiting normally would wait for them.
+        _hard_exit(130)
         return 130
 
 
@@ -74,7 +84,7 @@ def add_common_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--direct", action="store_true", help="Prefer direct flights only.")
     parser.add_argument(
         "--provider",
-        choices=["ollama", "openai-compatible", "demo"],
+        choices=["ollama", "openai-compatible", "nim", "demo"],
         default="",
         help="Override VOYAGER_LLM_PROVIDER for this run.",
     )
@@ -100,6 +110,8 @@ def settings_from_args(args: argparse.Namespace) -> Settings:
     settings = load_settings()
     if getattr(args, "provider", ""):
         settings.provider = args.provider
+        # The model map depends on the provider (nim has its own models).
+        settings.use_preset(settings.model_preset)
     if getattr(args, "no_search", False):
         settings.search_enabled = False
     return settings
@@ -131,15 +143,9 @@ def cmd_plan(args: argparse.Namespace) -> int:
         tags=args.tag,
     )
 
-    def progress(agent_id: str, status: str, result: object) -> None:
-        if status == "running":
-            print(f"[{agent_id}] running...", file=sys.stderr)
-        else:
-            print(f"[{agent_id}] {status}", file=sys.stderr)
-
     out_path = _prepare_out_path(args.out)
-    trip = planner.plan_trip(preferences, destination, progress=progress)
-    markdown = trip.to_markdown()
+    trip = planner.plan_trip(preferences, destination, on_event=print_event)
+    markdown = render_markdown(trip)
     if out_path:
         path = out_path
         try:
@@ -155,6 +161,33 @@ def cmd_plan(args: argparse.Namespace) -> int:
     else:
         print(markdown)
     return 0 if not trip.errors else 2
+
+
+def print_event(event: PlanEvent) -> None:
+    """Print one plan event as a progress line on stderr. Chunks are not printed."""
+
+    line = _event_line(event)
+    if line:
+        print(line, file=sys.stderr)
+
+
+def _event_line(event: PlanEvent) -> str:
+    agent = event.agent_id
+    if event.kind == "agent_started":
+        return f"[{agent}] started"
+    if event.kind == "agent_failed":
+        return f"[{agent}] failed: {event.text or UNKNOWN_ERROR}"
+    if event.kind == "agent_finished":
+        result = event.result
+        if result is not None and result.itinerary is not None:
+            return f"[{agent}] done: {len(result.itinerary.days)} days"
+        report = result.report if result is not None else None
+        findings = len(report.findings) if report else 0
+        sourced = report.sourced_count if report else 0
+        return f"[{agent}] done: {findings} findings, {sourced} sourced"
+    if event.kind == "plan_finished":
+        return "plan finished"
+    return ""
 
 
 def _prepare_out_path(out: str) -> Path | None:

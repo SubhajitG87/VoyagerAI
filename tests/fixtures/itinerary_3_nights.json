@@ -1,0 +1,150 @@
+{
+  "days": [
+    {
+      "number": 1,
+      "title": "Arrival and Alfama",
+      "morning": {
+        "title": "Arrive and settle in",
+        "description": "Land at Humberto Delgado airport and take the metro to the hotel.",
+        "place": "Hotel in Baixa",
+        "cost": {
+          "low": 0,
+          "high": 10
+        }
+      },
+      "afternoon": {
+        "title": "Alfama walk",
+        "description": "Wander the narrow lanes up to the Sao Jorge Castle viewpoint.",
+        "place": "Castelo de Sao Jorge",
+        "cost": {
+          "low": 10,
+          "high": 15
+        }
+      },
+      "evening": {
+        "title": "Fado dinner",
+        "description": "Dinner with live fado in a small tasca.",
+        "place": "Alfama",
+        "cost": {
+          "low": 35,
+          "high": 55
+        }
+      }
+    },
+    {
+      "number": 2,
+      "title": "Belem",
+      "morning": {
+        "title": "Jeronimos Monastery",
+        "description": "Visit the monastery early to beat the queues.",
+        "place": "Mosteiro dos Jeronimos",
+        "cost": {
+          "low": 10,
+          "high": 12
+        }
+      },
+      "afternoon": {
+        "title": "Belem Tower and pasteis",
+        "description": "Walk the riverfront to the tower, then try pasteis de nata.",
+        "place": "Torre de Belem",
+        "cost": {
+          "low": 8,
+          "high": 15
+        }
+      },
+      "evening": {
+        "title": "LX Factory",
+        "description": "Browse shops and eat dinner in a converted factory.",
+        "place": "LX Factory",
+        "cost": {
+          "low": 25,
+          "high": 40
+        }
+      }
+    },
+    {
+      "number": 3,
+      "title": "Sintra day trip",
+      "morning": {
+        "title": "Pena Palace",
+        "description": "Take the early train to Sintra and head up to the palace.",
+        "place": "Palacio da Pena",
+        "cost": {
+          "low": 15,
+          "high": 20
+        }
+      },
+      "afternoon": {
+        "title": "Quinta da Regaleira",
+        "description": "Explore the gardens and the initiation well.",
+        "place": "Quinta da Regaleira",
+        "cost": {
+          "low": 12,
+          "high": 15
+        }
+      },
+      "evening": {
+        "title": "Back in Lisbon",
+        "description": "Casual dinner in Bairro Alto.",
+        "place": "Bairro Alto",
+        "cost": {
+          "low": 20,
+          "high": 35
+        }
+      }
+    },
+    {
+      "number": 4,
+      "title": "Last morning",
+      "morning": {
+        "title": "Time Out Market",
+        "description": "Breakfast and gifts at the food hall.",
+        "place": "Mercado da Ribeira",
+        "cost": {
+          "low": 10,
+          "high": 20
+        }
+      },
+      "afternoon": {
+        "title": "Departure",
+        "description": "Collect bags and head to the airport.",
+        "place": "Humberto Delgado Airport",
+        "cost": null
+      },
+      "evening": {
+        "title": "Safe travels",
+        "description": "Nothing planned after departure.",
+        "place": null,
+        "cost": null
+      }
+    }
+  ],
+  "tips": [
+    "Buy a rechargeable Viva Viagem card for metro and trams.",
+    "Wear shoes with grip: the cobbles get slippery."
+  ],
+  "budget": {
+    "items": [
+      {
+        "label": "Flights",
+        "low": 300,
+        "high": 600
+      },
+      {
+        "label": "Hotel (3 nights)",
+        "low": 240,
+        "high": 480
+      },
+      {
+        "label": "Food",
+        "low": 120,
+        "high": 220
+      },
+      {
+        "label": "Activities",
+        "low": 60,
+        "high": 100
+      }
+    ]
+  }
+}

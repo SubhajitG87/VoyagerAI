@@ -6,14 +6,22 @@ import sys
 import unittest
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from voyager_ai.config import Settings
+from voyager_ai.fetch import Page
 from voyager_ai.models import Destination, SearchResult, TravelPreferences
 from voyager_ai.search import (
     DuckDuckGoSearchClient,
     NoopSearchClient,
+    SearchClient,
+    SearchError,
     build_search_client,
     format_search_context,
+    is_official_domain,
     queries_for_agent,
+    rank_results,
+    shown_sources,
 )
 
 
@@ -26,7 +34,9 @@ class TestNoopSearchClient(unittest.TestCase):
 
     def test_search_many_deduplicates_nothing(self) -> None:
         client = NoopSearchClient()
-        self.assertEqual(client.search_many(["q1", "q2"]), [])
+        outcome = client.search_many(["q1", "q2"])
+        self.assertEqual(outcome.results, [])
+        self.assertEqual(outcome.errors, [])
 
 
 class TestDuckDuckGoSearchClient(unittest.TestCase):
@@ -88,9 +98,9 @@ class TestDuckDuckGoSearchClient(unittest.TestCase):
         p.start()
         self.patchers.append(p)
 
-        client = DuckDuckGoSearchClient()
-        results = client.search("any query")
-        self.assertEqual(results, [])
+        client = DuckDuckGoSearchClient(retries=1)
+        with self.assertRaises(SearchError):
+            client.search("any query")
 
     def test_search_handles_invalid_item_keys(self) -> None:
         self._patch_ddgs(
@@ -122,19 +132,14 @@ class TestDuckDuckGoSearchClient(unittest.TestCase):
         importer.assert_called_once_with("ddgs")
         self.assertEqual([r.url for r in results], ["https://example.com/t"])
 
-    def test_missing_ddgs_package_returns_empty(self) -> None:
-        with patch.dict("sys.modules", {"ddgs": None, "duckduckgo_search": None}):
-            with self.assertLogs("voyager_ai.search", level="WARNING"):
-                self.assertEqual(DuckDuckGoSearchClient().search("anything"), [])
-
-    def test_search_failure_logs_warning(self) -> None:
+    def test_search_failure_raises_search_error_with_reason(self) -> None:
         module = self._patch_ddgs([])
         module.DDGS.return_value.__enter__.return_value.text.side_effect = RuntimeError(
             "rate limited"
         )
-        with self.assertLogs("voyager_ai.search", level="WARNING") as logs:
-            self.assertEqual(DuckDuckGoSearchClient().search("q"), [])
-        self.assertIn("rate limited", logs.output[0])
+        with self.assertRaises(SearchError) as ctx:
+            DuckDuckGoSearchClient(retries=1).search("q")
+        self.assertIn("rate limited", str(ctx.exception))
 
 
 class TestBuildSearchClient(unittest.TestCase):
@@ -210,7 +215,7 @@ class TestFormatSearchContext(unittest.TestCase):
             SearchResult(title="Guide", url="https://example.com", snippet="A guide."),
         ]
         result = format_search_context(results)
-        self.assertIn("Use these search snippets", result)
+        self.assertIn("Snippet: A guide.", result)
         self.assertIn("Guide", result)
         self.assertIn("https://example.com", result)
         self.assertIn("A guide.", result)
@@ -220,9 +225,120 @@ class TestFormatSearchContext(unittest.TestCase):
             SearchResult(title=f"Result {i}", url=f"https://example.com/{i}") for i in range(20)
         ]
         result = format_search_context(results, limit=5)
-        self.assertEqual(len(result.splitlines()), 6)
+        self.assertEqual(result.count("Source ["), 5)
 
     def test_snippet_field_is_optional(self) -> None:
         results = [SearchResult(title="No Snippet", url="https://example.com")]
         result = format_search_context(results)
         self.assertIn("No Snippet", result)
+
+
+def r(name: str) -> SearchResult:
+    return SearchResult(name, f"https://{name}", "")
+
+
+def r_url(url: str) -> SearchResult:
+    return SearchResult("t", url, "")
+
+
+class FakeSearch(SearchClient):
+    def __init__(self, table):
+        self.table = table
+
+    def search(self, query, max_results=4):
+        value = self.table[query]
+        if isinstance(value, Exception):
+            raise value
+        return value
+
+
+def test_search_many_records_failures_and_keeps_other_results():
+    client = FakeSearch({"q1": [r("a")], "q2": SearchError("rate limited"), "q3": [r("b")]})
+    outcome = client.search_many(["q1", "q2", "q3"])
+    assert [x.url for x in outcome.results] == ["https://a", "https://b"]
+    assert outcome.errors == ["Search failed for 'q2': rate limited"]
+
+
+def test_ddg_retries_then_succeeds(monkeypatch):
+    calls = []
+
+    class FlakyDDGS:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def text(self, query, max_results=4):
+            calls.append(query)
+            if len(calls) == 1:
+                raise RuntimeError("blip")
+            return [{"title": "T", "href": "https://x.test/t", "body": "b"}]
+
+    module = MagicMock()
+    module.DDGS = FlakyDDGS
+    monkeypatch.setitem(sys.modules, "ddgs", module)
+    sleeps: list[float] = []
+    client = DuckDuckGoSearchClient(retries=2, sleep=sleeps.append)
+    results = client.search("q")
+    assert len(results) == 1
+    assert len(sleeps) == 1
+
+
+def test_missing_ddgs_is_an_error(monkeypatch):
+    monkeypatch.setattr("voyager_ai.search._load_ddgs_module", lambda: None)
+    with pytest.raises(SearchError, match="pip install ddgs"):
+        DuckDuckGoSearchClient().search("q")
+
+
+@pytest.mark.parametrize(
+    "url,expected",
+    [
+        ("https://www.gov.uk/foreign-travel-advice", True),
+        ("https://www.mofa.go.jp/j_info/visit/visa/", True),
+        ("https://travel.state.gov/content/travel.html", True),
+        ("https://www.canada.ca/en/immigration", True),
+        ("https://indianvisaonline.gov.in/", True),
+        ("https://govisa.example.com/", False),
+        ("https://visa-gov.com/", False),
+        ("https://go.com/", False),
+    ],
+)
+def test_is_official_domain(url, expected):
+    assert is_official_domain(url) is expected
+
+
+def test_visa_ranking_puts_official_first_and_is_stable():
+    ranked = rank_results("visa", [r("blog1"), r_url("https://www.gov.uk/x"), r("blog2")])
+    assert [x.url for x in ranked] == ["https://www.gov.uk/x", "https://blog1", "https://blog2"]
+    assert rank_results("hotel", ranked[::-1]) == ranked[::-1]
+
+
+def test_build_search_client_passes_retries():
+    client = build_search_client(Settings(search_retries=5))
+    assert isinstance(client, DuckDuckGoSearchClient)
+    assert client.retries == 5
+
+
+def test_context_lists_pages_then_snippets_with_cite_rule() -> None:
+    ctx = format_search_context([r("a"), r("b")], pages=[Page("https://a", "A", "Body A")])
+    assert ctx.index("Body A") < ctx.index("https://b")
+    assert ctx.count("https://a") == 1
+    assert "Source [1]: A\nURL: https://a\nBody A" in ctx
+    assert "Source [2]: b\nURL: https://b\nSnippet: " in ctx
+    assert ctx.rstrip().endswith('set basis to "model" and source_url to null.')
+
+
+def test_context_limit_counts_pages_and_snippets() -> None:
+    results = [r_url(f"https://x/{i}") for i in range(10)]
+    pages = [Page(f"https://p/{i}", "P", "body") for i in range(2)]
+    assert format_search_context(results, pages=pages, limit=5).count("Source [") == 5
+
+
+def test_shown_sources_are_pages_then_snippets_up_to_the_limit() -> None:
+    results = [r_url(f"https://x/{i}") for i in range(4)]
+    pages = [Page("https://x/2", "P", "body")]
+    shown = shown_sources(results, pages=pages, limit=3)
+    assert [s.url for s in shown] == ["https://x/2", "https://x/0", "https://x/1"]
+    ctx = format_search_context(results, pages=pages, limit=3)
+    assert all(s.url in ctx for s in shown) and "https://x/3" not in ctx

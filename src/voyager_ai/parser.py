@@ -1,36 +1,21 @@
-"""Parsers for LLM JSON and itinerary markdown."""
+"""Parsers for LLM JSON."""
 
 from __future__ import annotations
 
 import json
 import re
-from dataclasses import dataclass
 from typing import Any
 
 from voyager_ai.models import ValidationError
 
 
-@dataclass
-class ItineraryDay:
-    num: int
-    title: str
-    body: str
+def strip_reasoning(text: str) -> str:
+    """Remove <think>...</think> blocks. An unclosed <think> means the answer never arrived."""
 
-
-@dataclass
-class ItinerarySection:
-    title: str
-    body: str
-
-
-@dataclass
-class ParsedItinerary:
-    days: list[ItineraryDay]
-    extras: list[ItinerarySection]
-
-
-DAY_RE = re.compile(r"^##\s+Day\s+(\d+)\s*[:\-\u2013\u2014]?\s*(.*)$", re.IGNORECASE)
-HEADING_RE = re.compile(r"^##\s+(.*)$")
+    text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL)
+    if "<think>" in text:
+        return ""
+    return text.strip()
 
 
 def strip_code_fence(text: str) -> str:
@@ -84,33 +69,3 @@ def extract_json(text: str) -> Any:
         return json.loads(candidate)
     except json.JSONDecodeError as exc:
         raise ValidationError(f"The model did not return valid JSON: {exc}") from exc
-
-
-def parse_itinerary(text: str) -> ParsedItinerary:
-    if not text:
-        return ParsedItinerary(days=[], extras=[])
-
-    chunks = [chunk for chunk in re.split(r"(?m)^(?=##\s+)", text) if chunk.strip()]
-    days = []
-    extras = []
-    for chunk in chunks:
-        stripped = chunk.strip()
-        first_line = stripped.splitlines()[0]
-        day_match = DAY_RE.match(first_line)
-        if day_match:
-            body = re.sub(r"^##[^\n]*\n?", "", stripped, count=1).strip()
-            days.append(
-                ItineraryDay(
-                    num=int(day_match.group(1)),
-                    title=day_match.group(2).strip() or f"Day {day_match.group(1)}",
-                    body=body,
-                )
-            )
-            continue
-
-        heading_match = HEADING_RE.match(first_line)
-        if heading_match:
-            body = re.sub(r"^##[^\n]*\n?", "", stripped, count=1).strip()
-            extras.append(ItinerarySection(title=heading_match.group(1).strip(), body=body))
-
-    return ParsedItinerary(days=days, extras=extras)

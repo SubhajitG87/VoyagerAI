@@ -1,0 +1,175 @@
+"""Render a structured trip plan as Markdown.
+
+Claims are never shown as fact without a source: a finding that does not cite one of the
+search results is labelled as model knowledge, visa rules always carry a reminder to check
+the official site, and prices carry a reminder that they are estimates. Every piece of
+model- or search-supplied text is escaped, so it cannot add links, headings or LaTeX.
+"""
+
+from __future__ import annotations
+
+import re
+
+from voyager_ai.links import NoPrices, PriceProvider, deep_links
+from voyager_ai.models import AgentResult, SearchResult, TripPlan
+from voyager_ai.structured import CostRange, Finding, Itinerary, Slot
+
+UNSOURCED_LABEL = "unverified: model knowledge"
+VISA_NOTE = "Check these rules on the official government site before you book."
+ESTIMATE_NOTE = (
+    "Estimates from the research above and model knowledge. "
+    "Check live prices with the booking links before you book."
+)
+
+_RESEARCH_AGENTS = ("flight", "visa", "hotel", "experience")
+# Which booking links appear under which research section.
+SECTION_LINKS = {"flight": ("Google Flights", "Skyscanner"), "hotel": ("Booking.com",)}
+
+
+# Characters that could start a link, table cell, emphasis, code, HTML, heading or LaTeX.
+_MD_SPECIAL = re.compile(r"([\\\[\]()|*_`<>#$])")
+_NEWLINES = re.compile(r"\s*[\r\n]+\s*")
+_URL_UNSAFE = {" ": "%20", "(": "%28", ")": "%29", "\t": "%09", "\n": "%0A", "\r": "%0D"}
+
+
+def md_escape(text: str) -> str:
+    """Make model- or search-supplied text inert in Markdown, on one line."""
+
+    return _MD_SPECIAL.sub(r"\\\1", _NEWLINES.sub(" ", text))
+
+
+def md_url(url: str) -> str:
+    """A URL that cannot end the `(url)` part of a Markdown link early."""
+
+    return "".join(_URL_UNSAFE.get(char, char) for char in url)
+
+
+def md_link(text: str, url: str) -> str:
+    return f"[{md_escape(text)}]({md_url(url)})"
+
+
+def money(amount: float) -> str:
+    return f"{round(amount):,}"
+
+
+def cost_range(cost: CostRange) -> str:
+    return f"USD {money(cost.low)}-{money(cost.high)}"
+
+
+def slot_line(name: str, slot: Slot) -> str:
+    text = md_escape(slot.title)
+    if slot.description and slot.description != slot.title:
+        text += f": {md_escape(slot.description)}"
+    if slot.place:
+        text += f" ({md_escape(slot.place)})"
+    if slot.cost:
+        text += f" - {cost_range(slot.cost)}"
+    return f"**{name}** - {text}"
+
+
+def finding_line(finding: Finding) -> str:
+    lead = f"**{md_escape(finding.topic)}:** " if finding.topic else ""
+    claim = md_escape(finding.claim)
+    if finding.basis == "sourced" and finding.source_url:
+        return f"- {lead}{claim} ([source]({md_url(finding.source_url)}))"
+    return f"- {lead}{claim} _({UNSOURCED_LABEL})_"
+
+
+def source_line(source: SearchResult) -> str:
+    snippet = f" - {md_escape(source.snippet)}" if source.snippet else ""
+    return f"- {md_link(source.title, source.url)}{snippet}"
+
+
+def _notices(result: AgentResult) -> list[str]:
+    # Warnings and errors can quote search queries or a server's reply.
+    lines = [f"> Warning: {md_escape(warning)}\n" for warning in result.warnings]
+    if result.error:
+        lines.append(f"> Agent error: {md_escape(result.error)}\n")
+    return lines
+
+
+def _facts(plan: TripPlan) -> list[str]:
+    prefs = plan.preferences
+    return [
+        f"# VoyagerAI Trip Plan: {md_escape(plan.destination.display_name)}\n",
+        f"- Departure: {md_escape(prefs.departure_city)}",
+        f"- Nationality: {md_escape(prefs.nationality_or_default)}",
+        f"- Travel window: {prefs.travel_window}",
+        f"- Trip length: {prefs.nights} nights / {prefs.days} days",
+        f"- Flight preference: {prefs.flight_preference}",
+        f"- Travel style: {prefs.vibe_description}\n",
+    ]
+
+
+def _itinerary(itinerary: Itinerary) -> list[str]:
+    lines = ["## Itinerary\n", f"{ESTIMATE_NOTE}\n"]
+    for day in itinerary.days:
+        lines.append(f"### Day {day.number} - {md_escape(day.title)}\n")
+        # A blank line after each slot keeps them as separate paragraphs.
+        lines.append(slot_line("Morning", day.morning) + "\n")
+        lines.append(slot_line("Afternoon", day.afternoon) + "\n")
+        lines.append(slot_line("Evening", day.evening) + "\n")
+    if itinerary.tips:
+        lines.append("## Practical Tips\n")
+        lines.extend(f"- {md_escape(tip)}" for tip in itinerary.tips)
+        lines.append("")
+    budget = itinerary.budget
+    if budget.items:
+        lines.append("## Budget\n")
+        lines.append(f"{ESTIMATE_NOTE}\n")
+        lines.append(f"| Item | Low ({budget.currency}) | High ({budget.currency}) |")
+        lines.append("| --- | ---: | ---: |")
+        for item in budget.items:
+            lines.append(
+                f"| {md_escape(item.label)} | {money(item.cost.low)} | {money(item.cost.high)} |"
+            )
+        total = budget.total
+        lines.append(f"| **Total** | {money(total.low)} | {money(total.high)} |\n")
+    lines.extend(f"> Warning: {md_escape(warning)}\n" for warning in itinerary.warnings)
+    return lines
+
+
+def _research(plan: TripPlan, result: AgentResult, prices: PriceProvider) -> list[str]:
+    lines = [f"## {result.label}\n"]
+    if result.agent_id == "visa":
+        lines.append(f"{VISA_NOTE}\n")
+    if result.report:
+        lines.append(f"{md_escape(result.report.summary)}\n")
+        if result.report.findings:
+            lines.extend(finding_line(finding) for finding in result.report.findings)
+            lines.append("")
+    names = SECTION_LINKS.get(result.agent_id, ())
+    if names:
+        links = deep_links(plan.preferences, plan.destination)
+        lines.append("### Booking Links\n")
+        lines.extend(f"- [{name}]({links[name]})" for name in names)
+        if result.agent_id == "flight":
+            for quote in prices.quotes(plan.preferences, plan.destination):
+                lines.append(f"- {md_link(quote.label, quote.url)} - {cost_range(quote.cost)}")
+        lines.append("")
+    if result.sources:
+        lines.append("### Sources Considered\n")
+        lines.extend(source_line(source) for source in result.sources)
+        lines.append("")
+    lines.extend(_notices(result))
+    return lines
+
+
+def render_markdown(plan: TripPlan, prices: PriceProvider | None = None) -> str:
+    """The whole plan as Markdown: trip facts, itinerary, then each research section."""
+
+    prices = prices or NoPrices()
+    lines = _facts(plan)
+    final = plan.results.get("itinerary")
+    if final is not None:
+        if final.itinerary is not None:
+            lines.extend(_itinerary(final.itinerary))
+        else:
+            lines.append("## Itinerary\n")
+            lines.append("No itinerary could be built for this run.\n")
+        lines.extend(_notices(final))
+    for agent_id in _RESEARCH_AGENTS:
+        result = plan.results.get(agent_id)
+        if result is not None:
+            lines.extend(_research(plan, result, prices))
+    return "\n".join(lines).strip() + "\n"

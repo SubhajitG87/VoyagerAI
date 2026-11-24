@@ -1,0 +1,35 @@
+{
+  "allowed_urls": [
+    "https://www.mofa.go.jp/j_info/visit/visa/",
+    "https://www.isa.go.jp/en/"
+  ],
+  "payload": {
+    "summary": "Many nationalities can enter Japan visa-free for short tourist stays, but rules vary by passport.",
+    "findings": [
+      {
+        "topic": "Entry",
+        "claim": "Citizens of many countries may visit Japan for up to 90 days without a visa for tourism.",
+        "basis": "sourced",
+        "source_url": "https://www.mofa.go.jp/j_info/visit/visa/"
+      },
+      {
+        "topic": "Residence status",
+        "claim": "Short-term stay status is granted at the border by immigration officers.",
+        "basis": "sourced",
+        "source_url": "https://www.isa.go.jp/en/"
+      },
+      {
+        "topic": "Passport",
+        "claim": "Passports should generally be valid for the whole stay.",
+        "basis": "model",
+        "source_url": null
+      },
+      {
+        "topic": "Onward travel",
+        "claim": "Officers may ask for proof of onward travel and accommodation.",
+        "basis": "sourced",
+        "source_url": "https://example.invalid/not-allowed"
+      }
+    ]
+  }
+}

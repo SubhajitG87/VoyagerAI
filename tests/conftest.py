@@ -19,7 +19,9 @@ def _blocked(*args: object, **kwargs: object) -> None:
 
 
 @pytest.fixture(autouse=True)
-def _no_network(monkeypatch: pytest.MonkeyPatch) -> None:
+def _no_network(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> None:
+    if request.node.get_closest_marker("live"):
+        return  # opt-in live tests are meant to reach the network
     monkeypatch.setattr(socket.socket, "connect", _blocked)
     monkeypatch.setattr(socket.socket, "connect_ex", _blocked)
     # The search library uses its own HTTP stack, so it is replaced as a whole.
@@ -31,7 +33,9 @@ def _no_network(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(autouse=True)
-def _isolated_settings(monkeypatch: pytest.MonkeyPatch) -> None:
+def _isolated_settings(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> None:
+    if request.node.get_closest_marker("live"):
+        return  # live tests read the real environment and .env file
     monkeypatch.setattr("voyager_ai.config._load_dotenv_if_available", lambda: None)
     for name in list(os.environ):
         if name.startswith(("VOYAGER_", "OLLAMA_", "OPENAI_COMPATIBLE_")):

@@ -1,4 +1,12 @@
-from voyager_ai.config import MODEL_PRESETS, Settings, resolve_model_map
+from voyager_ai.config import (
+    AGENT_IDS,
+    MODEL_PRESETS,
+    NIM_BASE_URL,
+    NIM_MODELS,
+    Settings,
+    llm_retries_for,
+    resolve_model_map,
+)
 
 
 def test_override_survives_preset_change():
@@ -44,3 +52,87 @@ def test_research_context_chars_from_env(monkeypatch):
     assert Settings.from_env().research_context_chars == 0
     monkeypatch.setenv("VOYAGER_RESEARCH_CONTEXT_CHARS", "5000")
     assert Settings.from_env().research_context_chars == 5000
+
+
+def test_retry_and_think_settings(monkeypatch):
+    monkeypatch.setenv("VOYAGER_LLM_RETRIES", "0")
+    monkeypatch.setenv("VOYAGER_OLLAMA_THINK", "maybe")
+    s = Settings.from_env()
+    assert s.llm_retries == 1 and s.ollama_think == "false"
+
+
+def test_nim_model_map_keeps_overrides():
+    env = {"VOYAGER_AGENT_MODEL_VISA": "custom/visa"}
+    model_map = resolve_model_map("small", env, provider="nim")
+    assert model_map["visa"] == "custom/visa"
+    assert model_map["flight"] == NIM_MODELS["flight"]
+
+
+def test_nim_models_cover_every_agent():
+    assert set(NIM_MODELS) == set(AGENT_IDS)
+
+
+def test_nim_settings_from_env(monkeypatch):
+    monkeypatch.setenv("VOYAGER_LLM_PROVIDER", "nim")
+    for name in AGENT_IDS:
+        monkeypatch.delenv(f"VOYAGER_AGENT_MODEL_{name.upper()}", raising=False)
+        monkeypatch.delenv(f"VOYAGER_MODEL_{name.upper()}", raising=False)
+    monkeypatch.setenv("NVIDIA_API_KEY", "k")
+    monkeypatch.delenv("NVIDIA_BASE_URL", raising=False)
+    monkeypatch.setenv("VOYAGER_SCHEMA_MODE", "vllm_guided")
+    settings = Settings.from_env()
+    assert settings.nvidia_api_key == "k"
+    assert settings.nvidia_base_url == NIM_BASE_URL
+    assert settings.schema_mode == "vllm_guided"
+    assert settings.model_map == NIM_MODELS
+
+
+def test_use_preset_keeps_nim_models():
+    settings = Settings(provider="nim")
+    settings.use_preset("small")
+    assert settings.model_map == NIM_MODELS
+
+
+def test_fetch_settings_defaults_and_env(monkeypatch):
+    settings = Settings.from_env()
+    assert (settings.fetch_pages, settings.page_chars) == (3, 4000)
+    monkeypatch.setenv("VOYAGER_FETCH_PAGES", "0")
+    monkeypatch.setenv("VOYAGER_PAGE_CHARS", "1200")
+    settings = Settings.from_env()
+    assert (settings.fetch_pages, settings.page_chars) == (0, 1200)
+
+
+def test_fetch_settings_have_floors(monkeypatch):
+    monkeypatch.setenv("VOYAGER_FETCH_PAGES", "-2")
+    monkeypatch.setenv("VOYAGER_PAGE_CHARS", "10")
+    settings = Settings.from_env()
+    assert (settings.fetch_pages, settings.page_chars) == (0, 500)
+
+
+def test_effective_concurrency_defaults():
+    assert Settings(provider="ollama").effective_llm_concurrency == 1
+    assert Settings(provider="nim").effective_llm_concurrency == 4
+    assert Settings(provider="ollama", llm_concurrency=2).effective_llm_concurrency == 2
+
+
+def test_llm_concurrency_from_env(monkeypatch):
+    monkeypatch.setenv("VOYAGER_LLM_CONCURRENCY", "3")
+    assert Settings.from_env().llm_concurrency == 3
+    monkeypatch.setenv("VOYAGER_LLM_CONCURRENCY", "-2")
+    assert Settings.from_env().llm_concurrency == 0
+
+
+def test_nim_gets_more_retries_by_default(monkeypatch):
+    assert Settings.from_env().llm_retries == 3
+    monkeypatch.setenv("VOYAGER_LLM_PROVIDER", "openai-compatible")
+    assert Settings.from_env().llm_retries == 3
+    monkeypatch.setenv("VOYAGER_LLM_PROVIDER", "nim")
+    assert Settings.from_env().llm_retries == 5
+    assert llm_retries_for("nim") == 5 and llm_retries_for("ollama") == 3
+
+
+def test_explicit_retries_win_over_the_nim_default(monkeypatch):
+    monkeypatch.setenv("VOYAGER_LLM_PROVIDER", "nim")
+    monkeypatch.setenv("VOYAGER_LLM_RETRIES", "2")
+    assert Settings.from_env().llm_retries == 2
+    assert llm_retries_for("nim") == 2
